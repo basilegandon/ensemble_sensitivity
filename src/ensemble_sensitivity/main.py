@@ -4,30 +4,49 @@
 
 import argparse
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
+    Args:
+        args: Command-line arguments, or None to use sys.argv.
+
     Returns:
-        argparse.Namespace: Parsed command-line arguments.
+        Parsed command-line arguments.
 
     """
     parser = argparse.ArgumentParser(description="Ensemble Sensitivity Analysis")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
-    return parser.parse_args()
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+    return parser.parse_args(args)
 
 
-def main() -> None:
-    """Entry point for the ensemble-sensitivity package."""
-    args = parse_args()
+def configure_logging(*, verbose: bool = False) -> None:
+    """Configure application logging.
 
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
+    Args:
+        verbose: Whether to enable DEBUG-level logging.
+
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level)
+
+
+def main(args: Sequence[str] | None = None) -> None:
+    """Run the application."""
+    parsed_args = parse_args(args)
+    configure_logging(verbose=parsed_args.verbose)
 
     logger.info("Hello from ensemble-sensitivity!")
     logger.debug("Debugging is enabled.")
