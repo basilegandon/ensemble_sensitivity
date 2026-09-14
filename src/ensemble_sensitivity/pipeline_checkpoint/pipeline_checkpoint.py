@@ -4,11 +4,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import itertools
+import json
+import logging
+import threading
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, cast, overload, override
@@ -16,8 +20,11 @@ from typing import TYPE_CHECKING, Self, cast, overload, override
 import polars as pl
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine, Iterator
     from types import TracebackType
+    from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,36 +35,25 @@ class _CheckpointConfig:
     track_inputs: bool
 
 
-def _checkpoint_call[**P, R](
-    func: Callable[P, R],
-    config: _CheckpointConfig,
-    mode: CheckpointMode,
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> R:
-    """Execute a function and checkpoint its DataFrame inputs and outputs.
+@dataclass(frozen=True, slots=True)
+class ManifestEntry:
+    """One row of a run's checkpoint manifest (one line of ``manifest.jsonl``)."""
 
-    Args:
-        func: The function to execute.
-        config: Checkpoint configuration.
-        mode: The current checkpoint mode.
-        args: Positional arguments to pass to the function.
-        kwargs: Keyword arguments to pass to the function.
+    step: int
+    label: str
+    path: str | None
+    status: Literal["ok", "error"]
+    error: str | None
+    timestamp: str
 
-    Returns:
-        The result returned by the function.
+    def to_json(self) -> str:
+        """Serialize this entry as a single JSON line.
 
-    """
-    signature = inspect.signature(func)
-    bound = signature.bind_partial(*args, **kwargs).arguments
+        Returns:
+            str: The JSON-encoded entry, without trailing newline.
 
-    if config.track_inputs:
-        _checkpoint_inputs(bound, label=config.label, mode=mode)
-
-    result = func(*args, **kwargs)
-    _checkpoint_outputs(result, bound, label=config.label, mode=mode)
-
-    return result
+        """
+        return json.dumps(asdict(self))
 
 
 _current_mode: ContextVar[CheckpointMode | None] = ContextVar(
@@ -92,14 +88,16 @@ class CheckpointMode:
 
         Args:
             base_dir: The base directory for checkpoints.
-            run_id: An optional identifier for the current run. If None, a timestamp-based
-                identifier is generated.
+            run_id: An optional identifier for the current run. If None, a
+                timestamp-based identifier is generated.
 
         """
         self.base_dir = Path(base_dir)
-        self.run_id = run_id or datetime.now(tz=UTC).strftime("run_%Y%m%d_%H%M%S")
+        self.run_id = run_id or datetime.now(tz=UTC).strftime("run_%Y%m%d_%H%M%S_%f")
         self.run_dir = self.base_dir / self.run_id
+        self.manifest_path = self.run_dir / "manifest.jsonl"
         self._step_counter = itertools.count(1)
+        self._manifest_lock = threading.Lock()
         self._token: Token[CheckpointMode | None] | None = None
 
     def __enter__(self) -> Self:
@@ -126,7 +124,6 @@ class CheckpointMode:
             exc: The exception instance, if any.
             tb: The traceback, if any.
 
-
         """
         if self._token is None:
             return
@@ -138,10 +135,28 @@ class CheckpointMode:
         """Return the next checkpoint step number.
 
         Returns:
-            int: The next step number.
+            int: The next step number. ``itertools.count.__next__`` is
+            implemented in C and is atomic under the GIL, so this is safe
+            to call concurrently from several threads (e.g. via
+            ``asyncio.to_thread``) without an explicit lock.
 
         """
         return next(self._step_counter)
+
+    def record(self, entry: ManifestEntry) -> None:
+        """Append one entry to this run's manifest, best-effort.
+
+        Args:
+            entry: The manifest entry to append.
+
+        """
+        try:
+            with self._manifest_lock, self.manifest_path.open("a", encoding="utf-8") as handle:
+                handle.write(entry.to_json() + "\n")
+        except OSError:
+            logger.warning(
+                "Impossible d'écrire dans le manifest %s", self.manifest_path, exc_info=True
+            )
 
     @staticmethod
     def is_active() -> bool:
@@ -154,127 +169,210 @@ class CheckpointMode:
         return _current_mode.get() is not None
 
 
-def _dump(
-    df: pl.DataFrame,
-    label: str,
-    *,
-    mode: CheckpointMode,
-) -> Path:
-    """Dump a DataFrame to a uniquely numbered Parquet file.
+def _dump(frame: pl.DataFrame | pl.LazyFrame, label: str, *, mode: CheckpointMode) -> Path | None:
+    """Persist one frame as a uniquely numbered Parquet file, best-effort.
+
+    A DataFrame is written eagerly (``write_parquet``); a LazyFrame is
+    streamed directly to disk (``sink_parquet``) without being collected
+    into memory first, using the best engine Polars can select for the
+    query (``engine="auto"``: the engine set by
+    ``pl.Config.set_engine_affinity``/the ``POLARS_ENGINE_AFFINITY``
+    environment variable, falling back to the streaming engine).
+
+    This function never raises: a failure is logged with its precise
+    cause and recorded in the run's manifest, but never interrupts the
+    pipeline being checkpointed — checkpointing is an observability
+    side effect, not part of the actual computation.
 
     Args:
-        df: The DataFrame to dump.
+        frame: The DataFrame or LazyFrame to persist.
         label: A label to include in the filename.
         mode: The current checkpoint mode.
 
     Returns:
-        Path: The path to the dumped Parquet file.
+        Path | None: The path written to, or None if the write failed.
 
     """
-    idx = mode.next_step()
-    path = mode.run_dir / f"{idx:04d}_{label}.parquet"
-    df.write_parquet(path)
+    step = mode.next_step()
+    path = mode.run_dir / f"{step:04d}_{label}.parquet"
+    timestamp = datetime.now(tz=UTC).isoformat()
+
+    try:
+        if isinstance(frame, pl.LazyFrame):
+            frame.sink_parquet(path, engine="auto")
+        else:
+            frame.write_parquet(path)
+    except Exception as exc:  # ruff: ignore[blind-except] - un échec de checkpoint ne doit jamais casser le pipeline
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.warning("Checkpoint %r (étape %d) échoué : %s", label, step, reason)
+        mode.record(
+            ManifestEntry(
+                step=step,
+                label=label,
+                path=None,
+                status="error",
+                error=reason,
+                timestamp=timestamp,
+            ),
+        )
+        return None
+
+    mode.record(
+        ManifestEntry(
+            step=step,
+            label=label,
+            path=str(path),
+            status="ok",
+            error=None,
+            timestamp=timestamp,
+        ),
+    )
     return path
 
 
-def _as_df(value: object) -> pl.DataFrame | None:
-    """Return the DataFrame represented by a value, if any.
+def _as_frame(value: object) -> pl.DataFrame | pl.LazyFrame | None:
+    """Return the Polars frame represented by a value, if any.
 
     Args:
         value: The value to check.
 
     Returns:
-        pl.DataFrame | None: The DataFrame if the value is a DataFrame or has a 'df' attribute that
-        is a DataFrame, otherwise None.
+        pl.DataFrame | pl.LazyFrame | None: The frame if the value is one,
+        or has a 'df' attribute that is one, otherwise None.
 
     """
-    if isinstance(value, pl.DataFrame):
+    if isinstance(value, (pl.DataFrame, pl.LazyFrame)):
         return value
 
     maybe = getattr(value, "df", None)
-    return maybe if isinstance(maybe, pl.DataFrame) else None
+    return maybe if isinstance(maybe, (pl.DataFrame, pl.LazyFrame)) else None
 
 
-def _checkpoint_inputs(
+def _iter_input_frames(
     bound: dict[str, object],
-    *,
-    label: str,
-    mode: CheckpointMode,
-) -> None:
-    """Checkpoint DataFrame arguments.
+) -> Iterator[tuple[str, pl.DataFrame | pl.LazyFrame]]:
+    """Yield each (suffix, frame) pair found among a function's bound arguments.
 
     Args:
         bound: A dictionary of parameter names to argument values.
-        label: A label to include in the checkpoint filenames.
-        mode: The current checkpoint mode.
+
+    Yields:
+        tuple[str, pl.DataFrame | pl.LazyFrame]: A filename suffix and the
+        frame it identifies.
 
     """
     for parameter_name, value in bound.items():
-        df = _as_df(value)
-        if df is not None:
-            _dump(df, f"{label}.in.{parameter_name}", mode=mode)
+        frame = _as_frame(value)
+        if frame is not None:
+            yield f"in.{parameter_name}", frame
 
 
-def _checkpoint_mutated_state(
+def _iter_output_frames(
+    result: object,
     bound: dict[str, object],
-    *,
-    label: str,
-    mode: CheckpointMode,
-) -> None:
-    """Checkpoint DataFrames contained in mutated arguments.
+) -> Iterator[tuple[str, pl.DataFrame | pl.LazyFrame]]:
+    """Yield each (suffix, frame) pair found in a function's result.
 
     Args:
-        bound: A dictionary of parameter names to argument values.
-        label: A label to include in the checkpoint filenames.
-        mode: The current checkpoint mode.
+        result: The value returned by the decorated function.
+        bound: A dictionary of parameter names to argument values, used
+            when `result` is None (mutated-state convention).
 
-    """
-    for parameter_name, value in bound.items():
-        df = _as_df(value)
-        if df is not None:
-            _dump(df, f"{label}.out.{parameter_name}", mode=mode)
-
-
-def _checkpoint_dataframe_outputs(
-    outputs: tuple[object, ...], *, label: str, mode: CheckpointMode
-) -> None:
-    """Checkpoint DataFrame outputs.
-
-    Args:
-        outputs: A tuple of output values from a function.
-        label: A label to include in the checkpoint filenames.
-        mode: The current checkpoint mode.
-
-    """
-    multiple = len(outputs) > 1
-
-    for index, value in enumerate(outputs):
-        if isinstance(value, pl.DataFrame):
-            suffix = f"out{index}" if multiple else "out"
-            _dump(value, f"{label}.{suffix}", mode=mode)
-
-
-def _checkpoint_outputs(
-    result: object, bound: dict[str, object], *, label: str, mode: CheckpointMode
-) -> None:
-    """Checkpoint the result of a decorated function.
-
-    Args:
-        result: The result returned by the decorated function.
-        bound: A dictionary of parameter names to argument values.
-        label: A label to include in the checkpoint filenames.
-        mode: The current checkpoint mode.
-
+    Yields:
+        tuple[str, pl.DataFrame | pl.LazyFrame]: A filename suffix and the
+        frame it identifies.
 
     """
     if result is None:
-        _checkpoint_mutated_state(bound, label=label, mode=mode)
+        # 0 sortie -> état muté en place : on relit chaque argument, dont
+        # l'état reflète maintenant la sortie de l'appel qui vient de finir.
+        for parameter_name, value in bound.items():
+            frame = _as_frame(value)
+            if frame is not None:
+                yield f"out.{parameter_name}", frame
         return
 
     outputs: tuple[object, ...] = (
         cast("tuple[object, ...]", result) if isinstance(result, tuple) else (result,)
     )
-    _checkpoint_dataframe_outputs(outputs, label=label, mode=mode)
+    multiple = len(outputs) > 1
+    for index, value in enumerate(outputs):
+        if isinstance(value, (pl.DataFrame, pl.LazyFrame)):
+            yield (f"out{index}" if multiple else "out"), value
+
+
+def _checkpoint_call[**P, R](
+    func: Callable[P, R],
+    config: _CheckpointConfig,
+    mode: CheckpointMode,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    """Execute a synchronous function and checkpoint its frames.
+
+    Args:
+        func: The function to execute.
+        config: Checkpoint configuration.
+        mode: The current checkpoint mode.
+        args: Positional arguments to pass to the function.
+        kwargs: Keyword arguments to pass to the function.
+
+    Returns:
+        The result returned by the function.
+
+    """
+    signature = inspect.signature(func)
+    bound = signature.bind_partial(*args, **kwargs).arguments
+
+    if config.track_inputs:
+        for suffix, frame in _iter_input_frames(bound):
+            _dump(frame, f"{config.label}.{suffix}", mode=mode)
+
+    result = func(*args, **kwargs)
+
+    for suffix, frame in _iter_output_frames(result, bound):
+        _dump(frame, f"{config.label}.{suffix}", mode=mode)
+
+    return result
+
+
+async def _checkpoint_call_async[**P, R](
+    func: Callable[P, Coroutine[Any, Any, R]],
+    config: _CheckpointConfig,
+    mode: CheckpointMode,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    """Execute an async function and checkpoint its frames.
+
+    Identical to `_checkpoint_call`, except the decorated function is
+    awaited, and each Parquet write runs in a worker thread
+    (`asyncio.to_thread`) so it never blocks the event loop.
+
+    Args:
+        func: The coroutine function to execute.
+        config: Checkpoint configuration.
+        mode: The current checkpoint mode.
+        args: Positional arguments to pass to the function.
+        kwargs: Keyword arguments to pass to the function.
+
+    Returns:
+        The result returned by the function.
+
+    """
+    signature = inspect.signature(func)
+    bound = signature.bind_partial(*args, **kwargs).arguments
+
+    if config.track_inputs:
+        for suffix, frame in _iter_input_frames(bound):
+            await asyncio.to_thread(_dump, frame, f"{config.label}.{suffix}", mode=mode)
+
+    result = await func(*args, **kwargs)
+
+    for suffix, frame in _iter_output_frames(result, bound):
+        await asyncio.to_thread(_dump, frame, f"{config.label}.{suffix}", mode=mode)
+
+    return result
 
 
 @overload
@@ -301,13 +399,20 @@ def checkpoint[**P, R](
     name: str | None = None,
     track_inputs: bool = False,
 ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
-    """Decorate a function with automatic DataFrame checkpoints.
+    """Decorate a function with automatic DataFrame/LazyFrame checkpoints.
+
+    Works transparently on both regular and ``async def`` functions.
+    Outside an active `CheckpointMode`, the decorated function runs
+    completely unmodified — for a LazyFrame in particular, this means no
+    collection ever happens implicitly; it stays exactly as lazy as the
+    function made it, unless the function itself calls `.collect()`.
 
     Args:
         func: The function to decorate.
-        name: An optional label to use for checkpoint filenames. If None, the function's qualified
-            name is used.
-        track_inputs: Whether to checkpoint DataFrame inputs to the function.
+        name: An optional label for checkpoint filenames. If None, the
+            function's name is used.
+        track_inputs: Whether to also checkpoint DataFrame/LazyFrame
+            arguments, in addition to the output(s).
 
     Returns:
         The decorated function.
@@ -316,25 +421,30 @@ def checkpoint[**P, R](
 
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
         label = _sanitize_label(name or f.__name__)
-        config = _CheckpointConfig(
-            label=label,
-            track_inputs=track_inputs,
-        )
+        config = _CheckpointConfig(label=label, track_inputs=track_inputs)
+
+        if inspect.iscoroutinefunction(f):
+            # `f` est ici une coroutine function : Callable[P, Coroutine[Any, Any, R]].
+            # Le vérificateur de types ne peut pas déduire cette restriction d'un
+            # simple test à l'exécution (`iscoroutinefunction`) : le `cast` rend
+            # explicite ce que la vérification runtime vient de garantir.
+            async_f = cast("Callable[P, Coroutine[Any, Any, R]]", f)
+
+            @functools.wraps(f)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                mode = _current_mode.get()
+                if mode is None:
+                    return await async_f(*args, **kwargs)
+                return await _checkpoint_call_async(async_f, config, mode, *args, **kwargs)
+
+            return cast("Callable[P, R]", async_wrapper)
 
         @functools.wraps(f)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             mode = _current_mode.get()
-
             if mode is None:
                 return f(*args, **kwargs)
-
-            return _checkpoint_call(
-                f,
-                config,
-                mode,
-                *args,
-                **kwargs,
-            )
+            return _checkpoint_call(f, config, mode, *args, **kwargs)
 
         return wrapper
 
@@ -342,7 +452,7 @@ def checkpoint[**P, R](
 
 
 class CheckpointedPipeline:
-    """Automatically checkpoint public methods of subclasses."""
+    """Automatically checkpoint public methods of subclasses (sync or async)."""
 
     @override
     def __init_subclass__(cls, **kwargs: object) -> None:
