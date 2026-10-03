@@ -8,15 +8,55 @@ permissions:
   contents: read
 
 jobs:
+  package-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Create clean virtual environment
+        run: uv venv .smoke-venv --python 3.14
+
+      - name: Install wheel
+        run: uv pip install --python .smoke-venv/bin/python --no-build dist/*.whl
+
+      - name: Import installed package outside source tree
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/.smoke-venv/bin/python" -c '
+          import pathlib
+          import ensemble_sensitivity
+
+          package_path = pathlib.Path(ensemble_sensitivity.__file__).resolve()
+          assert "site-packages" in package_path.parts, package_path
+          print(package_path)
+          '
+        env:
+          PYTHONPATH: ""
+
   quality:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           enable-cache: true
 
@@ -24,19 +64,38 @@ jobs:
         run: uv python install 3.14
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --no-build --no-install-project
 
       - name: Check formatting
-        run: uv run ruff format --check .
+        run: uv run --locked --no-sync --no-build ruff format --check .
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --locked --no-sync --no-build ruff check .
 
       - name: Type check
-        run: uv run mypy .
+        run: uv run --locked --no-sync --no-build mypy .
 
       - name: Security check
-        run: uv run bandit -r src
+        run: uv run --locked --no-sync --no-build bandit -r src
 
       - name: Tests
-        run: uv run pytest --cov
+        run: uv run --locked --no-sync --no-build pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
+        env:
+          PYTHONPATH: src
+
+      - name: Check for SonarQube token
+        id: sonar-token
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [[ -n "$SONAR_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: SonarQube Cloud Scan
+        if: steps.sonar-token.outputs.available == 'true'
+        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
