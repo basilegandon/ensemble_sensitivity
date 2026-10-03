@@ -41,7 +41,7 @@ jobs:
         run: uv run bandit -r src
 
       - name: Tests
-        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
+        run: uv run --locked --no-sync --no-build pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
 
       - name: Check for SonarQube token
         id: sonar-token
@@ -56,6 +56,6 @@ jobs:
 
       - name: SonarQube Cloud Scan
         if: steps.sonar-token.outputs.available == 'true'
-        uses: SonarSource/sonarqube-scan-action@v7
+        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
