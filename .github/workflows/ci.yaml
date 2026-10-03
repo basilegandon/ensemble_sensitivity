@@ -29,8 +29,11 @@ jobs:
       - name: Create clean virtual environment
         run: uv venv .smoke-venv --python 3.14
 
+      - name: Install locked runtime dependencies
+        run: uv sync --locked --no-dev --no-install-project --python .smoke-venv/bin/python
+
       - name: Install wheel
-        run: uv pip install --python .smoke-venv/bin/python --no-build dist/*.whl
+        run: uv pip install --python .smoke-venv/bin/python --no-build --no-deps dist/*.whl
 
       - name: Import installed package outside source tree
         run: |
