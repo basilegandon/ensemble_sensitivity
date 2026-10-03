@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the automatic DataFrame checkpoint pipeline."""
 
+import asyncio
 import inspect
+import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -14,6 +17,7 @@ from ensemble_sensitivity.pipeline_checkpoint import (
     CheckpointMode,
     checkpoint,
 )
+from ensemble_sensitivity.pipeline_checkpoint.pipeline_checkpoint import ManifestEntry
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -221,6 +225,15 @@ def test_checkpoint_mode_creates_run_directory(tmp_path: Path) -> None:
     assert not CheckpointMode.is_active()
 
 
+def test_checkpoint_mode_exit_without_enter_is_noop(tmp_path: Path) -> None:
+    """Test that exiting an inactive context manager is safe."""
+    mode = CheckpointMode(tmp_path, run_id="run")
+
+    mode.__exit__(None, None, None)
+
+    assert not CheckpointMode.is_active()
+
+
 def test_checkpoint_mode_restores_state_after_exception(
     tmp_path: Path,
 ) -> None:
@@ -238,6 +251,27 @@ def test_checkpoint_mode_restores_state_after_exception(
     assert not CheckpointMode.is_active()
 
 
+def test_checkpoint_manifest_write_failure_is_best_effort(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that a missing run directory does not make manifest recording fail."""
+    mode = CheckpointMode(tmp_path, run_id="run")
+    entry = ManifestEntry(
+        step=1,
+        label="transform.out",
+        path=None,
+        status="error",
+        error="OSError: disk full",
+        timestamp="2026-01-01T00:00:00+00:00",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        mode.record(entry)
+
+    assert "Impossible d'écrire dans le manifest" in caplog.text
+
+
 def test_checkpoint_mode_restores_nested_state(tmp_path: Path) -> None:
     """Test that the CheckpointMode context manager correctly restores state in nested contexts."""
     with CheckpointMode(tmp_path, run_id="outer"):
@@ -249,6 +283,103 @@ def test_checkpoint_mode_restores_nested_state(tmp_path: Path) -> None:
         assert CheckpointMode.is_active()
 
     assert not CheckpointMode.is_active()
+
+
+def test_checkpoint_write_failure_is_recorded_and_does_not_fail_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that a failed Parquet save is recorded without interrupting the function."""
+
+    def fail_write(_frame: pl.DataFrame, _path: str | Path) -> None:
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", fail_write)
+
+    @checkpoint(name="transform")
+    def transform(df: pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns(pl.lit(value=True).alias("flag"))
+
+    df = pl.DataFrame({"id": [1, 2, 3]})
+
+    with CheckpointMode(tmp_path, run_id="run"):
+        result = transform(df)
+
+    manifest = (tmp_path / "run" / "manifest.jsonl").read_text(encoding="utf-8")
+    entry = json.loads(manifest)
+
+    assert result["flag"].to_list() == [True, True, True]
+    assert entry["status"] == "error"
+    assert entry["error"] == "OSError: disk full"
+    assert not _parquets(tmp_path / "run")
+
+
+def test_async_checkpoint_tracks_lazy_frames_and_is_inactive_outside_mode(
+    tmp_path: Path,
+) -> None:
+    """Test async checkpointing and that the wrapper is transparent when inactive."""
+
+    @checkpoint(name="async_transform", track_inputs=True)
+    async def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+        await asyncio.sleep(0)
+        return df.with_columns(pl.lit(value=True).alias("flag"))
+
+    df = pl.DataFrame({"id": [1, 2, 3]}).lazy()
+
+    async def run() -> pl.LazyFrame:
+        inactive_result = await transform(df)
+        assert inactive_result.collect()["flag"].to_list() == [True, True, True]
+        assert not (tmp_path / "run").exists()
+
+        with CheckpointMode(tmp_path, run_id="run"):
+            result = await transform(df)
+
+        assert result.collect()["flag"].to_list() == [True, True, True]
+        return result
+
+    asyncio.run(run())
+
+    files = _parquets(tmp_path / "run")
+    assert [path.name for path in files] == [
+        "0001_async_transform.in.df.parquet",
+        "0002_async_transform.out.parquet",
+    ]
+    assert pl.read_parquet(files[0]).equals(df.collect())
+
+
+def test_async_checkpoint_saves_output_without_tracked_inputs(tmp_path: Path) -> None:
+    """Test async output checkpointing when input tracking is disabled."""
+
+    @checkpoint(name="async_output")
+    async def create_frame() -> pl.LazyFrame:
+        await asyncio.sleep(0)
+        return pl.DataFrame({"id": [1, 2, 3]}).lazy()
+
+    async def run() -> pl.LazyFrame:
+        with CheckpointMode(tmp_path, run_id="run"):
+            return await create_frame()
+
+    result = asyncio.run(run())
+
+    files = _parquets(tmp_path / "run")
+    assert [path.name for path in files] == ["0001_async_output.out.parquet"]
+    assert pl.read_parquet(files[0]).equals(result.collect())
+
+
+def test_checkpoint_none_result_ignores_non_dataframe_arguments(
+    tmp_path: Path,
+) -> None:
+    """Test that None results do not checkpoint arguments without DataFrames."""
+
+    @checkpoint(name="observe")
+    def observe(value: int) -> None:
+        _ = value
+
+    with CheckpointMode(tmp_path, run_id="run"):
+        assert observe(1) is None
+
+    assert not _parquets(tmp_path / "run")
 
 
 def test_checkpoint_supports_bare_decorator(tmp_path: Path) -> None:
