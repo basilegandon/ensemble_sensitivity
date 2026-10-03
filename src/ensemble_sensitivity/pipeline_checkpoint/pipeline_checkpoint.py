@@ -292,9 +292,7 @@ def _iter_output_frames(
                 yield f"out.{parameter_name}", frame
         return
 
-    outputs: tuple[object, ...] = (
-        cast("tuple[object, ...]", result) if isinstance(result, tuple) else (result,)
-    )
+    outputs = tuple(result) if isinstance(result, (tuple, list)) else (result,)
     multiple = len(outputs) > 1
     for index, value in enumerate(outputs):
         if isinstance(value, (pl.DataFrame, pl.LazyFrame)):

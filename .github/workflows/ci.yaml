@@ -29,8 +29,15 @@ jobs:
       - name: Create clean virtual environment
         run: uv venv .smoke-venv --python 3.14
 
+      - name: Install locked runtime dependencies
+        run: uv sync --locked --no-build --no-dev --no-install-project --python .smoke-venv/bin/python
+
       - name: Install wheel
-        run: uv pip install --python .smoke-venv/bin/python --no-build dist/*.whl
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          wheel_hash="$(sha256sum "$wheel" | cut -d ' ' -f1)"
+          printf '%s --hash=sha256:%s\n' "$GITHUB_WORKSPACE/$wheel" "$wheel_hash" > "$RUNNER_TEMP/wheel-requirements.txt"
+          uv pip install --python .smoke-venv/bin/python --no-build --no-deps --require-hashes --requirements "$RUNNER_TEMP/wheel-requirements.txt"
 
       - name: Import installed package outside source tree
         run: |
