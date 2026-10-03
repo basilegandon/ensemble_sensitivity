@@ -13,12 +13,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           enable-cache: true
 
@@ -26,22 +26,24 @@ jobs:
         run: uv python install 3.14
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --no-build --no-install-project
 
       - name: Check formatting
-        run: uv run ruff format --check .
+        run: uv run --locked --no-sync --no-build ruff format --check .
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --locked --no-sync --no-build ruff check .
 
       - name: Type check
-        run: uv run mypy .
+        run: uv run --locked --no-sync --no-build mypy .
 
       - name: Security check
-        run: uv run bandit -r src
+        run: uv run --locked --no-sync --no-build bandit -r src
 
       - name: Tests
         run: uv run --locked --no-sync --no-build pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
+        env:
+          PYTHONPATH: src
 
       - name: Check for SonarQube token
         id: sonar-token
