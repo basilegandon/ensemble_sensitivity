@@ -129,6 +129,28 @@ def test_checkpoint_saves_multiple_dataframe_outputs(tmp_path: Path) -> None:
     assert pl.read_parquet(files[1]).equals(result[1])
 
 
+def test_checkpoint_saves_dataframe_outputs_from_lists(tmp_path: Path) -> None:
+    """Test that list outputs are checkpointed as individual DataFrames."""
+
+    @checkpoint(name="split")
+    def split(df: pl.DataFrame) -> list[pl.DataFrame]:
+        return [df.head(1), df.tail(2)]
+
+    df = pl.DataFrame({"id": [1, 2, 3]})
+
+    with CheckpointMode(tmp_path, run_id="run"):
+        result = split(df)
+
+    files = _parquets(tmp_path / "run")
+
+    assert [path.name for path in files] == [
+        "0001_split.out0.parquet",
+        "0002_split.out1.parquet",
+    ]
+    assert pl.read_parquet(files[0]).equals(result[0])
+    assert pl.read_parquet(files[1]).equals(result[1])
+
+
 def test_checkpoint_ignores_non_dataframe_output(tmp_path: Path) -> None:
     """Test that the checkpoint decorator ignores non-DataFrame outputs."""
 

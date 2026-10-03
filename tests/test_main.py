@@ -26,16 +26,38 @@ def test_parse_args_verbose() -> None:
 
 
 def test_configure_logging_verbose(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that verbose mode configures DEBUG logging."""
+    """Test that verbose mode updates the root logger level and initializes logging once."""
     calls: list[int] = []
+    levels: list[int] = []
+
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.handlers: list[object] = []
+            self.manager = type("Manager", (), {"loggerDict": {}})()
+
+        @staticmethod
+        def setLevel(level: int) -> None:  # ruff: ignore[invalid-function-name]
+            levels.append(level)
+
+        def addHandler(self, handler: object) -> None:  # ruff: ignore[invalid-function-name]
+            self.handlers.append(handler)
+
+        def removeHandler(self, handler: object) -> None:  # ruff: ignore[invalid-function-name]
+            if handler in self.handlers:
+                self.handlers.remove(handler)
 
     def fake_basic_config(*, level: int) -> None:
         calls.append(level)
 
+    def fake_get_logger() -> FakeLogger:
+        return FakeLogger()
+
+    monkeypatch.setattr(logging, "getLogger", fake_get_logger)
     monkeypatch.setattr(logging, "basicConfig", fake_basic_config)
 
     configure_logging(verbose=True)
 
+    assert levels == [logging.DEBUG]
     assert calls == [logging.DEBUG]
 
 

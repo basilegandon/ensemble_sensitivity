@@ -40,7 +40,10 @@ def configure_logging(*, verbose: bool = False) -> None:
 
     """
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    if not root_logger.handlers:
+        logging.basicConfig(level=level)
 
 
 def main(args: Sequence[str] | None = None) -> None:
