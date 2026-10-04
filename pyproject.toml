@@ -56,6 +56,17 @@ preview = true
 "tests/**/*.py" = [
     "assert",      # assert
     "magic-value-comparison",   # magic values
+    "undocumented-public-function", # test names and assertions describe test behavior
+    "docstring-missing-returns",
+    "unnecessary-return-none",
+    "suspicious-xml-etree-import", # XML fixtures are authored by these tests
+    "suspicious-xml-element-tree-usage",
+]
+"tests/test_pearp_wcs_pilot.py" = [
+    "private-member-access", # exercise retry and response-validation helpers directly
+]
+"tests/test_pearp_api_probe.py" = [
+    "private-member-access", # exercise small response-parsing helpers directly
 ]
 # This standalone probe uses the standard-library XML parser for the small,
 # authenticated Météo-France response and a fixed HTTPS API host.
@@ -143,7 +154,7 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["src"]
+source = ["src", "docs"]
 
 [tool.coverage.report]
 exclude_also = [

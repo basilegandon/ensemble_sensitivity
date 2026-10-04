@@ -215,6 +215,92 @@ def next_access_time(error_body: str) -> datetime | None:
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
+def _throttle_retry_delay(error: HTTPError, member: int, lead_hours: int, retries: int) -> float:
+    """Return the API-directed retry delay or raise when retry is unavailable.
+
+    Args:
+        error: The HTTP error returned by the service.
+        member: Member ID for the failing request.
+        lead_hours: Forecast lead for the failing request.
+        retries: Number of throttle retries already performed.
+
+    Returns:
+        Seconds to wait before retrying the request.
+
+    Raises:
+        PilotError: If the response is not retryable or the retry limit is reached.
+
+    """
+    error_body = error.read(4096).decode("utf-8", errors="replace")
+    retry_time = next_access_time(error_body) if error.code == HTTP_TOO_MANY_REQUESTS else None
+    if retry_time is None or retries >= MAX_THROTTLE_RETRIES:
+        suffix = f"; nextAccessTime={retry_time.isoformat()}" if retry_time else ""
+        message = f"HTTP {error.code} for member {member:03}, lead {lead_hours} h{suffix}"
+        raise PilotError(message) from error
+
+    wait_seconds = max(0.0, retry_time.timestamp() - datetime.now(UTC).timestamp()) + 1.0
+    logger.warning(
+        "HTTP 429; waiting %.1f s until %s before retrying member %03d lead %d h",
+        wait_seconds,
+        retry_time.isoformat(),
+        member,
+        lead_hours,
+    )
+    return wait_seconds
+
+
+def _network_retry_delay(
+    error: TimeoutError | OSError,
+    member: int,
+    lead_hours: int,
+    retries: int,
+) -> tuple[int, float]:
+    """Return the next bounded network retry count and delay.
+
+    Args:
+        error: The timeout or network error that occurred.
+        member: Member ID for the failing request.
+        lead_hours: Forecast lead for the failing request.
+        retries: Number of network retries already performed.
+
+    Returns:
+        Updated retry count and delay in seconds.
+
+    Raises:
+        PilotError: If the request has reached the network retry limit.
+
+    """
+    if retries >= MAX_NETWORK_RETRIES:
+        failure = "Timed out" if isinstance(error, TimeoutError) else "Network failure"
+        raise PilotError(
+            f"{failure} for member {member:03}, lead {lead_hours} h "
+            f"after {retries} retries: {error}"
+        ) from error
+
+    retries += 1
+    retry_delay = float(retries)
+    if isinstance(error, TimeoutError):
+        logger.warning(
+            "Timeout; retrying member %03d lead %d h after %.1f s (%d/%d)",
+            member,
+            lead_hours,
+            retry_delay,
+            retries,
+            MAX_NETWORK_RETRIES,
+        )
+    else:
+        logger.warning(
+            "Network error; retrying member %03d lead %d h after %.1f s (%d/%d): %s",
+            member,
+            lead_hours,
+            retry_delay,
+            retries,
+            MAX_NETWORK_RETRIES,
+            error,
+        )
+    return retries, retry_delay
+
+
 def _load_eccodes() -> _Eccodes:
     """Load ecCodes lazily so metadata discovery does not need the binding.
 
@@ -375,41 +461,16 @@ def _open_with_retries(
         try:
             response: _HttpResponse = urlopen(request, timeout=HTTP_TIMEOUT_SECONDS)
         except HTTPError as error:
-            error_body = error.read(4096).decode("utf-8", errors="replace")
-            retry_time = (
-                next_access_time(error_body) if error.code == HTTP_TOO_MANY_REQUESTS else None
-            )
-            if retry_time is None or throttle_retries >= MAX_THROTTLE_RETRIES:
-                suffix = f"; nextAccessTime={retry_time.isoformat()}" if retry_time else ""
-                raise PilotError(
-                    f"HTTP {error.code} for member {member:03}, lead {lead_hours} h{suffix}"
-                ) from error
-            wait_seconds = max(0.0, (retry_time - datetime.now(UTC)).total_seconds()) + 1.0
+            wait_seconds = _throttle_retry_delay(error, member, lead_hours, throttle_retries)
             throttle_retries += 1
             throttle_wait_seconds += wait_seconds
-            logger.warning(
-                "HTTP 429; waiting %.1f s until %s before retrying member %03d lead %d h",
-                wait_seconds,
-                retry_time.isoformat(),
-                member,
-                lead_hours,
-            )
             time.sleep(wait_seconds)
         except TimeoutError as error:
-            if network_retries >= MAX_NETWORK_RETRIES:
-                raise PilotError(
-                    f"Timed out for member {member:03}, lead {lead_hours} h "
-                    f"after {network_retries} retries"
-                ) from error
-            network_retries += 1
-            retry_delay = float(network_retries)
-            logger.warning(
-                "Timeout; retrying member %03d lead %d h after %.1f s (%d/%d)",
+            network_retries, retry_delay = _network_retry_delay(
+                error,
                 member,
                 lead_hours,
-                retry_delay,
                 network_retries,
-                MAX_NETWORK_RETRIES,
             )
             time.sleep(retry_delay)
         except URLError as error:
@@ -417,21 +478,11 @@ def _open_with_retries(
                 f"Network failure for member {member:03}, lead {lead_hours} h: {error.reason}"
             ) from error
         except OSError as error:
-            if network_retries >= MAX_NETWORK_RETRIES:
-                raise PilotError(
-                    f"Network failure for member {member:03}, lead {lead_hours} h "
-                    f"after {network_retries} retries: {error}"
-                ) from error
-            network_retries += 1
-            retry_delay = float(network_retries)
-            logger.warning(
-                "Network error; retrying member %03d lead %d h after %.1f s (%d/%d): %s",
+            network_retries, retry_delay = _network_retry_delay(
+                error,
                 member,
                 lead_hours,
-                retry_delay,
                 network_retries,
-                MAX_NETWORK_RETRIES,
-                error,
             )
             time.sleep(retry_delay)
         else:
@@ -700,8 +751,8 @@ def main() -> int:
                 env_path=args.env_file,
             )
         )
-    except (OSError, PilotError, ValueError) as error:
-        logger.error("Unable to run WCS pilot: %s", error)
+    except OSError, PilotError, ValueError:
+        logger.exception("Unable to run WCS pilot")
         return 1
 
 

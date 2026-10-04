@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 VARIABLE_NAME = "PEARP_METEO_FRANCE_API_TOKEN"
 API_BASE_URL = "https://public-api.meteofrance.fr/public/pearpege/1.0"
 MAX_VERBOSE_AXIS_COORDINATES = 40
+REDACTED_VALUE = "[REDACTED]"
 
 
 class _HttpResponse(Protocol):
@@ -133,7 +134,7 @@ def request_xml(token: str, member: str, operation: str, params: dict[str, str])
             return response.read()
     except HTTPError as error:
         error_body = error.read(2048).decode("utf-8", errors="replace")
-        safe_body = error_body.replace(token, "[REDACTED]")
+        safe_body = error_body.replace(token, REDACTED_VALUE)
         logger.exception(
             "HTTP status %d; Content-Type: %s; response prefix: %r",
             error.code,
@@ -174,7 +175,7 @@ def _read_coverage_response(
         logger.error("Response exceeds limit of %d bytes", max_bytes)
         return None
     if "xml" in content_type.casefold():
-        safe_body = body.decode("utf-8", errors="replace").replace(token, "[REDACTED]")
+        safe_body = body.decode("utf-8", errors="replace").replace(token, REDACTED_VALUE)
         logger.error("Expected GRIB but received XML: %r", safe_body[:800])
         return None
     return body
@@ -207,7 +208,7 @@ def request_coverage(token: str, options: _CoverageRequest) -> int:
         response: _HttpResponse = urlopen(request, timeout=60)
     except HTTPError as error:
         error_body = error.read(2048).decode("utf-8", errors="replace")
-        safe_body = error_body.replace(token, "[REDACTED]")
+        safe_body = error_body.replace(token, REDACTED_VALUE)
         logger.exception("WCS GetCoverage failed: %d; %r", error.code, safe_body[:800])
         return 1
     except URLError:
