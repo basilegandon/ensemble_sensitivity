@@ -1,0 +1,620 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "PE-ARPEGE",
+    "version": "1.0"
+  },
+  "servers": [
+    {
+      "url": "https://public-api.meteofrance.fr/public/pearpege/1.0"
+    }
+  ],
+  "security": [
+    {
+      "default": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Prévision Ensemble ARPEGE 0.1",
+      "description": "Service de téléchargement (WCS) des données issues du modèle de prévision d’ensemble ARPEGE (modèle atmosphérique global français). Membre de 000 à n° membre max de la prévision d’ensemble. Résolution 0.1 degré sur l'Europe. Échéances 0 à échéance max par pas de 1h."
+    },
+    {
+      "name": "Prévision Ensemble ARPEGE 0.25",
+      "description": "Service de téléchargement (WCS) des données issues du modèle de prévision d'ensemble ARPEGE (modèle atmosphérique global français). Membre de 000 à n° membre max de la prévision d'ensemble. Résolution 0.25 degré sur l'Europe. Échéances 0 à échéance max par pas de 1h."
+    }
+  ],
+  "paths": {
+    "/wcs/MF-NWP-GLOBAL-PEARP{run}-01-EUROPE-WCS/GetCapabilities": {
+      "get": {
+        "tags": [
+          "Prévision Ensemble ARPEGE 0.1"
+        ],
+        "description": "Le GetCapabilities retourne les métadonnées du service (couches proposées, projections associées, auteur…)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "$ref": "#/components/parameters/service"
+          },
+          {
+            "$ref": "#/components/parameters/version"
+          },
+          {
+            "$ref": "#/components/parameters/language"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "400": {
+            "$ref": "#/components/responses/Badrequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidToken"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ThrottlingLimit"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServer"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "default": []
+          }
+        ],
+        "x-auth-type": "Application & Application User",
+        "x-throttling-tier": "Unlimited"
+      }
+    },
+    "/wcs/MF-NWP-GLOBAL-PEARP{run}-01-EUROPE-WCS/DescribeCoverage": {
+      "get": {
+        "tags": [
+          "Prévision Ensemble ARPEGE 0.1"
+        ],
+        "description": "DescribeCoverage décrit la structure du coverage (extension spatiale, extension temporelle, géométrie de la grille, type des données et unité des valeurs sur la grille)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "$ref": "#/components/parameters/service"
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "WCS version. The only accepted value is 2.0.1",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "2.0.1"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/coverageid"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "400": {
+            "$ref": "#/components/responses/Badrequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidToken"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ThrottlingLimit"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServer"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "default": []
+          }
+        ],
+        "x-auth-type": "Application & Application User",
+        "x-throttling-tier": "Unlimited"
+      }
+    },
+    "/wcs/MF-NWP-GLOBAL-PEARP{run}-01-EUROPE-WCS/GetCoverage": {
+      "get": {
+        "tags": [
+          "Prévision Ensemble ARPEGE 0.1"
+        ],
+        "description": "GetCoverage renvoie le coverage",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "$ref": "#/components/parameters/service"
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "WCS version. The only accepted value is 2.0.1",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "2.0.1"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/coverageid"
+          },
+          {
+            "name": "subset",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Format",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/wmo-grib"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/wmo-grib": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Badrequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidToken"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ThrottlingLimit"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServer"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "default": []
+          }
+        ],
+        "x-auth-type": "Application & Application User",
+        "x-throttling-tier": "Unlimited"
+      }
+    },
+    "/wcs/MF-NWP-GLOBAL-PEARP{run}-025-GLOBE-WCS/GetCapabilities": {
+      "get": {
+        "tags": [
+          "Prévision Ensemble ARPEGE 0.25"
+        ],
+        "description": "Le GetCapabilities retourne les métadonnées du service (couches proposées, projections associées, auteur…)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "$ref": "#/components/parameters/service"
+          },
+          {
+            "$ref": "#/components/parameters/version"
+          },
+          {
+            "$ref": "#/components/parameters/language"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "400": {
+            "$ref": "#/components/responses/Badrequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidToken"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ThrottlingLimit"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServer"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "default": []
+          }
+        ],
+        "x-auth-type": "Application & Application User",
+        "x-throttling-tier": "Unlimited"
+      }
+    },
+    "/wcs/MF-NWP-GLOBAL-PEARP{run}-025-GLOBE-WCS/DescribeCoverage": {
+      "get": {
+        "tags": [
+          "Prévision Ensemble ARPEGE 0.25"
+        ],
+        "description": "DescribeCoverage décrit la structure du coverage (extension spatiale, extension temporelle, géométrie de la grille, type des données et unité des valeurs sur la grille)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "$ref": "#/components/parameters/service"
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "WCS version. The only accepted value is 2.0.1",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "2.0.1"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/coverageid"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          },
+          "400": {
+            "$ref": "#/components/responses/Badrequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidToken"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ThrottlingLimit"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServer"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "default": []
+          }
+        ],
+        "x-auth-type": "Application & Application User",
+        "x-throttling-tier": "Unlimited"
+      }
+    },
+    "/wcs/MF-NWP-GLOBAL-PEARP{run}-025-GLOBE-WCS/GetCoverage": {
+      "get": {
+        "tags": [
+          "Prévision Ensemble ARPEGE 0.25"
+        ],
+        "description": "GetCoverage renvoie le coverage",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "$ref": "#/components/parameters/service"
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "WCS version. The only accepted value is 2.0.1",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "2.0.1"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/coverageid"
+          },
+          {
+            "name": "subset",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Format",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application/wmo-grib"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/wmo-grib": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Badrequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidToken"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ThrottlingLimit"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServer"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "security": [
+          {
+            "default": []
+          }
+        ],
+        "x-auth-type": "Application & Application User",
+        "x-throttling-tier": "Unlimited"
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "InvalidToken": {
+        "description": "Invalid token"
+      },
+      "Forbidden": {
+        "description": "Forbidden"
+      },
+      "InternalServer": {
+        "description": "Internal Server Error"
+      },
+      "Badrequest": {
+        "description": "Bad request"
+      },
+      "OK": {
+        "description": "OK"
+      },
+      "ThrottlingLimit": {
+        "description": "Throttling limit"
+      },
+      "Unavailable": {
+        "description": "Service Unavailable"
+      },
+      "Timeout": {
+        "description": "Backend Timeout"
+      }
+    },
+    "parameters": {
+      "run": {
+        "name": "run",
+        "in": "path",
+        "description": "Run number",
+        "required": true,
+        "style": "simple",
+        "explode": false,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "000",
+            "001",
+            "002",
+            "003",
+            "004",
+            "005",
+            "006",
+            "007",
+            "008",
+            "009",
+            "010",
+            "011",
+            "012",
+            "013",
+            "014",
+            "015",
+            "016",
+            "017",
+            "018",
+            "019",
+            "020",
+            "021",
+            "022",
+            "023",
+            "024",
+            "025",
+            "026",
+            "027",
+            "028",
+            "029",
+            "030",
+            "031",
+            "032",
+            "033",
+            "034"
+          ]
+        }
+      },
+      "service": {
+        "name": "service",
+        "in": "query",
+        "description": "The only mandatory accepted value is WCS.",
+        "required": true,
+        "style": "simple",
+        "explode": false,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "WCS"
+          ]
+        }
+      },
+      "version": {
+        "name": "version",
+        "in": "query",
+        "description": "WCS version. The only accepted value is 2.0.1",
+        "required": true,
+        "style": "simple",
+        "explode": false,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "2.0.1"
+          ]
+        }
+      },
+      "language": {
+        "name": "language",
+        "in": "query",
+        "required": true,
+        "style": "simple",
+        "explode": false,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "eng",
+            "fre"
+          ]
+        }
+      },
+      "coverageid": {
+        "name": "coverageid",
+        "in": "query",
+        "required": true,
+        "style": "simple",
+        "explode": false,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "securitySchemes": {
+      "default": {
+        "type": "oauth2",
+        "flows": {
+          "implicit": {
+            "authorizationUrl": "https://public-api.meteofrance.fr/authorize",
+            "scopes": {}
+          }
+        }
+      }
+    }
+  }
+}
