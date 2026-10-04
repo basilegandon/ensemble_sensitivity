@@ -242,8 +242,9 @@ def test_decode_single_message_validates_and_releases_handle() -> None:
 )
 def test_decode_single_message_rejects_invalid_framing(body: bytes) -> None:
     """Reject invalid magic, trailer, or declared message length."""
+    eccodes = FakeEccodes(_valid_metadata())
     with pytest.raises(PilotError, match=r"complete GRIB message|declares"):
-        pilot._decode_single_message(body, FakeEccodes(_valid_metadata()))
+        pilot._decode_single_message(body, eccodes)
 
 
 def test_load_eccodes_explains_missing_optional_binding(
@@ -316,8 +317,9 @@ def test_throttle_retry_rejects_non_retryable_http_error(
         raise _http_error(code, body)
 
     monkeypatch.setattr(pilot, "urlopen", fail_urlopen)
+    request = Request("https://example.invalid")
     with pytest.raises(PilotError, match=message):
-        pilot._open_with_retries(Request("https://example.invalid"), 0, 24)
+        pilot._open_with_retries(request, 0, 24)
 
 
 def test_network_retry_handles_transient_errors(
@@ -360,15 +362,16 @@ def test_network_retry_exhaustion_and_url_error_are_reported(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
     )
     monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    request = Request("https://example.invalid")
     with pytest.raises(PilotError, match="after 2 retries"):
-        pilot._open_with_retries(Request("https://example.invalid"), 0, 24)
+        pilot._open_with_retries(request, 0, 24)
     monkeypatch.setattr(
         pilot,
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(URLError("offline")),
     )
     with pytest.raises(PilotError, match="Network failure"):
-        pilot._open_with_retries(Request("https://example.invalid"), 0, 24)
+        pilot._open_with_retries(request, 0, 24)
 
 
 def test_validate_response_checks_size_content_type_and_grib_metadata() -> None:
@@ -376,14 +379,17 @@ def test_validate_response_checks_size_content_type_and_grib_metadata() -> None:
     response = FakeResponse(_valid_grib_message(), {"Content-Type": "application/wmo-grib"})
     field = FieldRequest("coverage", 7, 24, datetime(2026, 10, 4, tzinfo=UTC))
     metrics = RequestMetrics(time.monotonic(), 0, 0.0, 0)
-    result = pilot._validate_response(response, field, FakeEccodes(_valid_metadata()), metrics)
+    matching_metadata = FakeEccodes(_valid_metadata())
+    result = pilot._validate_response(response, field, matching_metadata, metrics)
     assert result.bytes_received == len(_valid_grib_message())
     oversized = FakeResponse(b"x", {"Content-Length": str(pilot.MAX_RESPONSE_BYTES + 1)})
+    oversized_metadata = FakeEccodes(_valid_metadata())
     with pytest.raises(PilotError, match="Content-Length"):
-        pilot._validate_response(oversized, field, FakeEccodes(_valid_metadata()), metrics)
+        pilot._validate_response(oversized, field, oversized_metadata, metrics)
     xml = FakeResponse(b"<error/>", {"Content-Type": "application/xml"})
+    xml_metadata = FakeEccodes(_valid_metadata())
     with pytest.raises(PilotError, match="Expected GRIB"):
-        pilot._validate_response(xml, field, FakeEccodes(_valid_metadata()), metrics)
+        pilot._validate_response(xml, field, xml_metadata, metrics)
     mismatch = FakeEccodes({**_valid_metadata(), "step": 3})
     with pytest.raises(PilotError, match="metadata mismatch"):
         pilot._validate_response(response, field, mismatch, metrics)
