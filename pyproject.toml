@@ -56,6 +56,36 @@ preview = true
 "tests/**/*.py" = [
     "assert",      # assert
     "magic-value-comparison",   # magic values
+    "undocumented-public-function", # test names and assertions describe test behavior
+    "docstring-missing-returns",
+    "unnecessary-return-none",
+    "suspicious-xml-etree-import", # XML fixtures are authored by these tests
+    "suspicious-xml-element-tree-usage",
+]
+"tests/test_pearp_wcs_pilot.py" = [
+    "private-member-access", # exercise retry and response-validation helpers directly
+]
+"tests/test_pearp_api_probe.py" = [
+    "private-member-access", # exercise small response-parsing helpers directly
+]
+# This standalone probe uses the standard-library XML parser for the small,
+# authenticated Météo-France response and a fixed HTTPS API host.
+"docs/probe_pe_arpege_api.py" = [
+    "implicit-namespace-package",
+    "suspicious-url-open-usage",
+    "suspicious-xml-etree-import",
+    "suspicious-xml-element-tree-usage",
+]
+# The pilot uses the same fixed HTTPS host and small XML capabilities document;
+# its explicit diagnostics and optional ecCodes binding are exploration-only.
+"docs/pilot_pearp_wcs.py" = [
+    "error-instead-of-exception",
+    "f-string-in-exception",
+    "raw-string-in-exception",
+    "raise-vanilla-args",
+    "suspicious-url-open-usage",
+    "suspicious-xml-etree-import",
+    "suspicious-xml-element-tree-usage",
 ]
 
 [tool.ruff.format]
@@ -124,7 +154,7 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["src"]
+source = ["src", "docs"]
 
 [tool.coverage.report]
 exclude_also = [

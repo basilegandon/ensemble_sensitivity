@@ -81,25 +81,50 @@ Jeu de données **« PE Arpege GLOB025 »** de Météo-France sur data.gouv.fr (
 
 **Piste technique.** Un projet tiers ([PEARP-25-km](https://github.com/alertesmeteo-hub/PEARP-25-km)) lit ces mêmes fichiers par requêtes HTTP _Range_, indexe les messages GRIB, ne télécharge que les champs utiles, puis vérifie run, échéance, grille, unités et présence des 35 membres. Le principe est directement réutilisable.
 
+**Sonde exploratoire (3–4 octobre 2026, non exhaustive ; détails et offsets dans [`docs/PEARP-data-landscape.md`](docs/PEARP-data-landscape.md)).**
+
+- Le catalogue data.gouv.fr du 3 octobre identifiait le jeu par `67ac5dffb832ee7684ed1c40` et renvoyait 103 ressources pour le run `202610030600`, nommées de `00:00` à `102:00`. Le catalogue avait tourné vers des ressources plus récentes au 4 octobre ; les URL objet des trois premières échéances du run testé restaient accessibles.
+- Les ressources testées pèsent environ 2,3 à 4,1 Go. L'objet du premier fichier annonce `Accept-Ranges: bytes` ; une requête `Range: bytes=0-63` renvoie `206` et exactement 64 octets. L'en-tête GRIB2 reçu annonce un premier message de 167 659 octets. Cette première lecture confirme le support des requêtes partielles, mais ne suffit pas à inventorier les messages.
+- Plusieurs conventions de nommage possibles pour un index `.idx` renvoient `404` sur les ressources testées ; l'absence d'index fourni pour tout le jeu n'est donc pas établie.
+- La documentation de l'API Ciblée PE Modèles ([Confluence](https://confluence-meteofrance.atlassian.net/wiki/spaces/OpenDataMeteoFrance/pages/853934184/API+Cibl+PE+Mod+les)) et son Swagger local (`docs/Modèle_ARPEGE_Prévision_d'Ensemble_swagger.json`) décrivent le serveur `/public/pearpe/1.0`, des routes WCS GLOB025 globales et EUROPE 0,1°, et `GetCoverage` avec `coverageid`, `subset` optionnel et une sortie GRIB. Le Swagger énumère les identifiants de route `000` à `034` ; le pilote confirme leur correspondance aux membres GRIB 0–34 pour Z500 à +0 h et +24 h du run du 4 octobre.
+- Le script `docs/probe_pe_arpege_api.py` lit `PEARP_METEO_FRANCE_API_TOKEN` depuis `.env` et envoie le jeton dans l'en-tête `apikey`. `GetCapabilities` sur la route globale GLOB025 et l'endpoint membre `000` renvoie HTTP `200`. Le 4 octobre, la réponse contient 1 768 coverage IDs et inclut le run Z500 `2026-10-04T00Z`. `DescribeCoverage` confirme pour le Z500 API 11 pressions, le domaine global et 35 échéances de 0 à 102 h au pas de 3 h.
+- Un `GetCoverage` à 1 000 hPa et +24 h, sans boîte spatiale, renvoie HTTP `200`, un message global GRIB de 2 076 662 octets, `level=1000`, `step=24` et une grille 1440 × 721. La sélection de pression fonctionne au moins pour 500 et 1 000 hPa malgré l'incohérence de l'enveloppe.
+- Un `GetCoverage` de contrôle à 500 hPa, +24 h et bbox 0–1°E / 45–46°N renvoie un champ 5×5 de 232 octets. Sur le run du 4 octobre, les 25 valeurs du sous-domaine sont identiques aux cellules correspondantes du champ global WCS membre 000 ; le global fait 2 076 662 octets, soit 8 951 fois plus que ce sous-domaine. En revanche, une requête combinant 1 000 hPa et cette bbox a renvoyé HTTP `400` (« Lat and long parameters are not allowed »). Ne pas supposer que toutes les combinaisons d'axes sont acceptées.
+- Incohérence à garder visible : `DescribeCoverage` énumère 11 coefficients de pression mais annonce une borne haute d'axe à 6. Une sélection globale à 1 000 hPa réussit ; le comportement des niveaux restants et leur combinaison avec la sélection spatiale restent à vérifier avant d'utiliser ces métadonnées comme contrat d'assemblage.
+- Scan GRIB complet du run `202610030600` par plages HTTP `Range` de 32 MiB : les ressources `00:00`, `01:00` et `02:00` contiennent respectivement 3 675, 2 625 et 2 625 messages complets. À `00:00`, Z500 (`paramId=129`, pression 500 hPa) apparaît une fois pour chacun des IDs 0–34 (`number` et `perturbationNumber` concordants), avec `step=0` et une déclaration de 35 membres. Aucun message Z500 500 hPa n'est présent dans les ressources complètes `01:00` et `02:00` ; ce constat porte sur cette variable/niveau, pas sur l'absence d'autres champs ou de données à ces échéances. L'inventaire des autres heures et variables reste à faire.
+- Le pilote `docs/pilot_pearp_wcs.py` a sélectionné le coverage le plus récent annoncé (`2026-10-04T00Z`), puis récupéré séquentiellement les 35 membres aux leads +24 h et +0 h : 70/70 réponses HTTP `200`, validées sur run, lead, membre, niveau, grille globale et unités, sans throttling ni nouvelle tentative réseau. Volume : **145 366 340 octets (138,63 MiB)** en **31,0 s** (moyenne 0,44 s par réponse). Une requête WCS par couple membre/lead est requise : une sélection temporelle `time(0,86400)` a renvoyé `InvalidSubsetting`. Pour chaque lancement, ne déclarer un run complet qu'après validation de tous les couples requis ; chercher le plus récent parmi les candidats ainsi complets, et ne pas confondre coverage annoncée avec données disponibles. Le GRIB data.gouv reste une source indépendante possible de vérification ou de repli, mais le coût comparable d'indexation sur le dernier run n'a pas été mesuré ; le choix primaire pourra être réévalué si le nombre d'échéances ou la volumétrie deviennent contraignants.
+
 ### 3.2 À vérifier (premier jalon)
 
 | #   | Question                                                                                                     | Statut |
 | --- | ------------------------------------------------------------------------------------------------------------ | ------ |
-| V1  | Z500 est-il présent ? Quel identifiant GRIB (paramètre, niveau) ?                                            | ❓     |
-| V2  | Quelle échéance maximale pour le jeu ouvert ? (une page tierce évoque 102 h, non confirmé)                   | ❓     |
-| V3  | Quel pas d'échéance (3 h, 6 h, 12 h, 24 h) selon la plage ?                                                  | ❓     |
-| V4  | Comment les échéances et les variables se répartissent-elles dans les 103 fichiers ?                         | ❓     |
-| V5  | Des index (`.idx`) sont-ils fournis, ou faut-il parcourir les en-têtes de messages ?                         | ❓     |
-| V6  | Unité de Z500 : hauteur géopotentielle (m) ou géopotentiel (m²/s²) ?                                         | ❓     |
-| V7  | Les membres sont-ils identifiés de façon stable (numéro d'ensemble, perturbation) ?                          | ❓     |
-| V8  | Délai entre l'heure nominale d'un run et la disponibilité complète de ses fichiers ?                         | ❓     |
-| V9  | Un jeu PEARP à 0,1° existe-t-il en accès ouvert ? (les paquets 0,1° trouvés sont ceux d'ARPEGE déterministe) | ❓     |
+| V1  | Z500 est-il présent ? Quel identifiant GRIB (paramètre, niveau) ? (`paramId=129`, `shortName=z`, `isobaricInhPa=500`, vérifié sur des messages du run `202610030600`) | ✅ |
+| V2  | Quelle échéance maximale pour le jeu ouvert ? (102 h, vérifiée sur la ressource et le message Z500 du run `202610030600`) | ✅ |
+| V3  | Quel pas d'échéance selon la plage ? (API Z500 : 3 h de 0 à 102 h ; GRIB Z500 absent des ressources complètes +1 h et +2 h ; autres heures à inventorier) | ❓ |
+| V4  | Comment les variables et les 35 membres se répartissent-ils dans chaque fichier ? (Z500 +0 h est présent une fois pour chacun des membres 0–34 ; Z500 absent à +1/+2 h ; inventaire complet des autres variables et échéances à faire) | ❓ |
+| V5  | Des index (`.idx`) sont-ils fournis ? Plusieurs variantes testées renvoient `404` sur des ressources sondées ; sinon, comment indexer les messages ? | ❓ |
+| V6  | Unité GRIB native de Z500 : `m² s⁻²` (géopotentiel, pas hauteur en mètres) ; conversion en hauteur à décider/documenter si nécessaire. | ✅ |
+| V7  | Z500 apparaît une fois pour chaque ID 0–34 aux leads +0 h du run 2026-10-03 et +0/+24 h du run 2026-10-04 ; `number` = `perturbationNumber` = ID et `numberOfForecastsInEnsemble=35`. Autres échéances à vérifier. | ✅ |
+| V8  | Délai entre l'heure nominale d'un run et la disponibilité complète de ses fichiers ?                        | ❓     |
+| V9  | Un jeu PEARP à 0,1° existe-t-il en accès ouvert sur data.gouv.fr ? Le Swagger décrit une route API EUROPE à 0,1°, mais son accès et sa couverture restent à confirmer. | ❓ |
+| V10 | L'API PE-ARPEGE applique-t-elle `subset` à la grille et au transfert ? (oui pour une bbox 0–1°E / 45–46°N, 500 hPa, +24 h : réponse GRIB 5×5, 232 octets ; valeurs identiques au champ global du même run ; combinaison avec 1 000 hPa à caractériser) | ✅ |
 
 ### 3.3 Volumétrie estimée
 
 - Un champ Z500 pour 35 membres, une échéance : 35 × 721 × 1440 × 4 octets ≈ **145 Mo** en float32.
-- Avec requêtes Range, le téléchargement se limite aux messages Z500 : de l'ordre de **100 à 150 Mo par échéance** (estimation à confirmer).
-- À 24 h de pas sur 4 à 5 jours : environ 5 échéances, soit quelques centaines de Mo au total.
+- Un message global Z500 compressé observé pèse **0,68–0,77 Mo par membre** selon les échantillons (hors indexation) ; une extrapolation à 35 membres donne environ **24–27 Mo par échéance**, à confirmer sur un inventaire complet.
+- À 24 h de pas sur 4 à 5 jours : environ 5 échéances, soit **120–135 Mo transférés** selon l'extrapolation des tailles de messages (hors indexation), à confirmer sur les 35 membres.
+
+**Décision d'ingestion v1 :** privilégier l'API WCS pour récupérer le dernier
+run complet au regard de la cible et des échéances prédictrices requises ; le
+pilote de 70 champs est passé sans erreur ni throttling. L'extraction reste
+manuelle et traite une échéance à la fois. Le sélecteur devra examiner les runs
+les plus récents et accepter le premier pour lequel tous les 35 membres de
+chaque échéance requise ont été récupérés et validés (run, pas, paramètre,
+niveau, grille et unités). Un coverage présent dans `GetCapabilities` ne suffit
+pas à déclarer le run complet. Le téléchargement direct GRIB demeure une
+solution possible de vérification et de repli ; son coût comparable d'indexation reste
+à mesurer avant d'en faire une stratégie automatique.
 
 ---
 
@@ -342,6 +367,7 @@ Estimations indicatives : **S** ≈ une demi-journée, **M** ≈ une à deux jou
 - **Critères d'acceptation :**
   - [ ] table exportée en CSV ou Parquet
   - [ ] regroupement visible par run (0/6/12/18) et par plage d'échéances si déductible des noms
+  - [ ] tailles, URLs finales et métadonnées de réponse consignées ; `Range` vérifié sans télécharger les fichiers entiers
 - **Dépendances :** aucune
 
 #### T0.2 Indexer un fichier GRIB2 sans le télécharger en entier (M)
@@ -351,23 +377,32 @@ Estimations indicatives : **S** ≈ une demi-journée, **M** ≈ une à deux jou
   - [ ] vérifier d'abord la présence d'un fichier d'index associé ; sinon parcours des en-têtes de messages
   - [ ] index sauvegardé sur disque, réutilisable
   - [ ] volume téléchargé pendant l'indexation mesuré et documenté
+  - [ ] échec explicite si le serveur ignore `Range` ou renvoie un `Content-Range` incohérent
 - **Dépendances :** T0.1
 
 #### T0.3 Localiser Z500 et caractériser la couverture (S)
 
 - **Objectif :** répondre à V1, V2, V3, V4, V7.
 - **Critères d'acceptation :**
-  - [ ] identifiant GRIB de Z500 documenté
+  - [x] identifiant GRIB de Z500 documenté
   - [ ] liste des échéances disponibles et du pas
-  - [ ] confirmation de 35 membres et de la façon de les identifier
+  - [x] 35 membres vérifiés à +0 h et IDs identifiés par `number` et `perturbationNumber`
 - **Dépendances :** T0.2
+
+**Résultats partiels :** V1, V2 et les 35 IDs Z500 de la ressource +0 h sont
+vérifiés pour le run `202610030600`. Les scans complets des ressources +1 h et
++2 h n'y trouvent aucun champ Z500 à 500 hPa ; chacune contient 2 625 messages
+GRIB complets. L'API annonce Z500 toutes les 3 h, mais la cadence complète des
+ressources GRIB et leur inventaire des autres variables restent à établir.
 
 #### T0.4 Décoder un champ Z500 et valider la grille et les unités (S)
 
 - **Objectif :** décoder un champ, vérifier la grille (1440 × 721), l'orientation des latitudes et les unités (V6).
 - **Critères d'acceptation :**
+  - [x] grille d'un message vérifiée : 1440 × 721, `regular_ll`, 0,25°, longitude 0–359,75°, latitude 90° vers −90° ; 1 038 240 valeurs finies
+  - [x] unité GRIB native documentée : géopotentiel en m² s⁻² (`paramId=129`)
+  - [ ] conversion éventuelle vers une hauteur en mètres fixée et codée
   - [ ] image de contrôle : le champ est plausible (creux, dorsales)
-  - [ ] unité documentée (m ou m²/s²) et conversion éventuelle codée
 - **Dépendances :** T0.3
 
 #### T0.5 Mesurer les délais de disponibilité des runs (S)
@@ -378,12 +413,26 @@ Estimations indicatives : **S** ≈ une demi-journée, **M** ≈ une à deux jou
   - [ ] règle de détection d'un run complet définie
 - **Dépendances :** T0.1
 
+#### T0.6 Comparer l'API WCS et les ressources GRIB (M)
+
+- **Objectif :** déterminer quelle voie permet de récupérer fiablement le Z500 requis avec le moins de données transférées, sans sacrifier la couverture globale nécessaire à l'analyse.
+- **Protocole :** utiliser le même run, la même échéance, la pression 500 hPa et les mêmes membres ; comparer une requête globale à une boîte régionale.
+- **Critères d'acceptation :**
+  - [x] accès API authentifié et `GetCapabilities` fonctionnel pour l'endpoint global GLOB025 `000` ; aucun secret n'est écrit dans les journaux, les sorties ou le dépôt
+  - [x] paramètres vérifiés pour choisir couverture (variable + run), endpoint membre, pression (500 et 1 000 hPa) et échéance documentés ; limites de la couverture temporelle identifiées
+  - [x] une bbox renvoie un champ 5×5 de 232 octets ; axes `long`, `lat`, `pressure`, `time` décodés
+  - [x] pilote WCS global à 24 h : 70/70 requêtes validées, 145 366 340 octets en 31,0 s, sans réponse `429` ; mesure comparable de l'indexation GRIB direct reste ouverte
+  - [x] patch global / bbox WCS même run, membre, échéance et niveau comparé : valeurs identiques sur les 25 cellules ; taille 2 076 662 contre 232 octets
+  - [x] choix v1 justifié : WCS primaire pour le dernier run complet au regard des champs requis ; data.gouv GRIB conservé comme possibilité de vérification/repli, son coût reste à mesurer
+- **Dépendances :** T0.3, T0.4
+
 ### Jalon M1 : Ingestion
 
 #### T1.1 Détection du dernier run complet (S)
 
 - **Critères d'acceptation :**
   - [ ] fonction `latest_complete_run()` fiable selon la règle de T0.5
+  - [ ] candidats examinés du plus récent au plus ancien selon les échéances de l'analyse ; ne retenir un run qu'après validation des 35 membres de chaque échéance requise (une annonce `GetCapabilities` seule n'est pas une preuve de complétude)
   - [ ] possibilité de forcer un run précis (date + réseau)
 - **Dépendances :** T0.5
 
