@@ -2,13 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the main module."""
 
+from __future__ import annotations
+
 import logging
-from typing import TYPE_CHECKING
+from importlib import import_module
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from ensemble_sensitivity.main import configure_logging, main, parse_args
 
-if TYPE_CHECKING:
-    import pytest
+main_module = import_module("ensemble_sensitivity.main")
 
 
 def test_parse_args_default() -> None:
@@ -97,3 +102,80 @@ def test_main_verbose(caplog: pytest.LogCaptureFixture) -> None:
         main(["--verbose"])
 
     assert "Debugging is enabled." in caplog.text
+
+
+def test_main_fetch_dispatches_retrieval_and_logs_result(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run_dir = Path("retrieved-run")
+    retrieve = Mock(return_value=run_dir)
+    monkeypatch.setattr(main_module, "retrieve_latest_complete_run", retrieve)
+
+    with caplog.at_level(logging.INFO):
+        main(["fetch", "--target-lead-hours", "48", "--step-hours", "12"])
+
+    options = retrieve.call_args.args[0]
+    assert options.target_lead_hours == 48
+    assert options.step_hours == 12
+    assert options.output_dir == Path("data") / "pearp"
+    assert options.env_file == Path(".env")
+    assert "Complete PEARP run saved to" in caplog.text
+
+
+def test_main_fetch_reports_retrieval_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_latest_complete_run",
+        Mock(side_effect=main_module.RetrievalError("API unavailable")),
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        main(["fetch"])
+
+
+def test_main_plot_dispatches_rendering_and_logs_count(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    outputs = (Path("first.png"), Path("second.png"))
+    render = Mock(return_value=outputs)
+    monkeypatch.setattr(main_module, "render_quicklooks", render)
+
+    with caplog.at_level(logging.INFO):
+        main(
+            [
+                "plot",
+                "--run-dir",
+                "run",
+                "--lead-hours",
+                "24,48",
+                "--members",
+                "0,1",
+                "--output-dir",
+                "maps",
+            ]
+        )
+
+    assert render.call_args.kwargs == {
+        "lead_hours": "24,48",
+        "members": "0,1",
+        "output_dir": Path("maps"),
+        "output_path": None,
+    }
+    assert "Saved 2 quicklook map(s)" in caplog.text
+
+
+def test_main_plot_reports_invalid_selections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "render_quicklooks",
+        Mock(side_effect=ValueError("invalid selection")),
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        main(["plot", "--run-dir", "run", "--lead-hours", "invalid"])

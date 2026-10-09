@@ -76,6 +76,7 @@ preview = true
 "tests/test_data_pipeline.py" = [
     "float-equality-comparison",
     "private-member-access",
+    "suspicious-url-open-usage", # verify URL guards reject untrusted endpoints before opening
     "undocumented-magic-method",
     "undocumented-public-init",
     "undocumented-public-method",

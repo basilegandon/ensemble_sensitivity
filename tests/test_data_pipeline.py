@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import time
@@ -11,8 +12,10 @@ from datetime import UTC, datetime, timedelta
 from email.message import Message
 from itertools import pairwise
 from typing import TYPE_CHECKING, ClassVar, Self, cast, override
+from unittest.mock import Mock
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request
 
 import cartopy.crs as ccrs
 import numpy as np
@@ -25,7 +28,6 @@ from ensemble_sensitivity.wcs_retrieval import RetrievalError, RetrievalOptions
 if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
-    from urllib.request import Request
 
 
 class FakeEccodes:
@@ -175,6 +177,35 @@ def test_required_leads_and_invalid_arguments() -> None:
         wcs_retrieval.required_leads(24, 0)
 
 
+def test_read_token_prefers_environment_and_parses_env_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n# ignored\nexport PEARP_METEO_FRANCE_API_TOKEN='from-file'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(wcs_retrieval.VARIABLE_NAME, raising=False)
+    assert wcs_retrieval.read_token(env_file) == "from-file"
+    monkeypatch.setenv(wcs_retrieval.VARIABLE_NAME, "from-environment")
+    assert wcs_retrieval.read_token(env_file) == "from-environment"
+
+
+def test_read_token_rejects_missing_or_empty_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    monkeypatch.delenv(wcs_retrieval.VARIABLE_NAME, raising=False)
+    env_file.write_text("", encoding="utf-8")
+    with pytest.raises(RetrievalError, match="missing or empty"):
+        wcs_retrieval.read_token(env_file)
+    env_file.write_text(f"{wcs_retrieval.VARIABLE_NAME}=\n", encoding="utf-8")
+    with pytest.raises(RetrievalError, match="missing or empty"):
+        wcs_retrieval.read_token(env_file)
+
+
 def test_coverage_candidates_are_sorted_newest_first() -> None:
     candidates = wcs_retrieval.coverage_candidates(
         _capabilities("2026-10-03T18.00.00Z", "2026-10-04T00.00.00Z")
@@ -189,6 +220,58 @@ def test_coverage_candidates_reject_malformed_xml_and_ids() -> None:
     malformed_capabilities = _capabilities("not-a-timestamp")
     with pytest.raises(RetrievalError, match="Invalid initialization"):
         wcs_retrieval.coverage_candidates(malformed_capabilities)
+    with pytest.raises(RetrievalError, match="No isobaric geopotential"):
+        wcs_retrieval.coverage_candidates(
+            b"<Capabilities><CoverageId>OTHER</CoverageId></Capabilities>"
+        )
+
+
+def test_eccodes_import_failure_has_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        Mock(side_effect=ImportError),
+    )
+    with pytest.raises(RetrievalError, match="uv sync --locked"):
+        wcs_retrieval._load_eccodes()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-10-04T11:05:00Z", datetime(2026, 10, 4, 11, 5, tzinfo=UTC)),
+        ("2026-oct.-04 11:05:00+0000 UTC", datetime(2026, 10, 4, 11, 5, tzinfo=UTC)),
+        ("invalid", None),
+    ],
+)
+def test_next_access_time_formats(
+    value: str,
+    expected: datetime | None,
+) -> None:
+    body = json.dumps({"nextAccessTime": value})
+    assert wcs_retrieval._next_access_time(body) == expected
+
+
+def test_grib_validation_rejects_invalid_framing() -> None:
+    eccodes = FakeEccodes(_metadata())
+    with pytest.raises(RetrievalError, match="not one complete GRIB"):
+        wcs_retrieval._validate_grib(
+            b"not-grib",
+            eccodes,
+            member=0,
+            lead_hours=0,
+            initialization=datetime(2026, 10, 4, tzinfo=UTC),
+        )
+    malformed_length = bytearray(_valid_grib_message())
+    malformed_length[8:16] = (len(malformed_length) + 1).to_bytes(8, "big")
+    with pytest.raises(RetrievalError, match="header declares"):
+        wcs_retrieval._validate_grib(
+            bytes(malformed_length),
+            eccodes,
+            member=0,
+            lead_hours=0,
+            initialization=datetime(2026, 10, 4, tzinfo=UTC),
+        )
 
 
 def test_get_capabilities_retries_at_service_directed_time(
@@ -255,6 +338,45 @@ def test_get_capabilities_does_not_retry_429_without_server_retry_time(
     assert calls == 1
 
 
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (FakeResponse(b"not xml"), "not a bounded XML"),
+        (FakeResponse(b"<" + b"x" * (8 * 1024 * 1024)), "not a bounded XML"),
+    ],
+)
+def test_get_capabilities_rejects_invalid_or_oversized_body(
+    monkeypatch: pytest.MonkeyPatch,
+    response: FakeResponse,
+    message: str,
+) -> None:
+    wcs_retrieval._request_timestamps.clear()
+    monkeypatch.setattr(wcs_retrieval, "_open_with_retries", lambda *_args, **_kwargs: response)
+    with pytest.raises(RetrievalError, match=message):
+        wcs_retrieval._get_capabilities("token")
+
+
+def test_get_capabilities_wraps_transport_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    wcs_retrieval._request_timestamps.clear()
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_open_with_retries",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+    with pytest.raises(RetrievalError, match="GetCapabilities request failed"):
+        wcs_retrieval._get_capabilities("token")
+
+
+def test_open_https_only_accepts_configured_https_host() -> None:
+    urls = (
+        wcs_retrieval.API_BASE_URL.replace("https://", "http://") + "/test",
+        wcs_retrieval.API_BASE_URL.replace("public-api.meteofrance.fr", "example.com") + "/test",
+    )
+    for url in urls:
+        with pytest.raises(RetrievalError, match="configured HTTPS API host"):
+            wcs_retrieval._open_https(Request(url))
+
+
 def test_wcs_requests_stay_below_rolling_minute_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -299,6 +421,78 @@ def test_wcs_requests_stay_below_rolling_minute_limit(
         <= wcs_retrieval.MAX_REQUESTS_PER_MINUTE
         for start in request_starts
     )
+
+
+def test_request_retries_transient_network_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses: list[TimeoutError | FakeResponse] = [
+        TimeoutError("temporary failure"),
+        FakeResponse(b"ok"),
+    ]
+    waits: list[float] = []
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_wait_for_request_slot",
+        lambda _context: None,
+    )
+
+    def open_request(_request: Request) -> FakeResponse:
+        response = responses.pop(0)
+        if isinstance(response, TimeoutError):
+            raise response
+        return response
+
+    monkeypatch.setattr(wcs_retrieval, "_open_https", open_request)
+    monkeypatch.setattr(time, "sleep", waits.append)
+    response = wcs_retrieval._open_with_retries(Request("https://example.invalid"), context="test")
+    assert response.read() == b"ok"
+    assert waits == [1.0]
+
+
+def test_request_stops_after_network_retry_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_wait_for_request_slot",
+        lambda _context: None,
+    )
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_open_https",
+        lambda _request: (_ for _ in ()).throw(TimeoutError("network down")),
+    )
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    with pytest.raises(RetrievalError, match="after 2 retries"):
+        wcs_retrieval._open_with_retries(Request("https://example.invalid"), context="test")
+
+
+def test_request_stops_after_throttle_retry_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retry_time = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+    error_body = json.dumps({"nextAccessTime": retry_time}).encode()
+    error_url = "https://example.invalid"
+
+    def raise_throttle(_request: Request) -> FakeResponse:
+        raise HTTPError(
+            error_url,
+            429,
+            "Too Many Requests",
+            Message(),
+            io.BytesIO(error_body),
+        )
+
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_wait_for_request_slot",
+        lambda _context: None,
+    )
+    monkeypatch.setattr(wcs_retrieval, "_open_https", raise_throttle)
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    with pytest.raises(RetrievalError, match="after 5 throttle retries"):
+        wcs_retrieval._open_with_retries(Request("https://example.invalid"), context="test")
 
 
 def test_validate_grib_checks_field_identity_and_releases_handle() -> None:
@@ -353,6 +547,33 @@ def test_field_request_uses_api_header_and_exact_subsets(
     query = parse_qs(urlsplit(request.full_url).query)
     assert query["subset"] == ["pressure(500)", "time(86400)"]
     assert "PEARP007" in request.full_url
+
+
+@pytest.mark.parametrize(
+    ("headers", "body", "message"),
+    [
+        ({"Content-Length": "bad"}, b"", "Invalid Content-Length"),
+        (
+            {"Content-Length": str(wcs_retrieval.MAX_RESPONSE_BYTES + 1)},
+            b"",
+            "Content-Length exceeds",
+        ),
+        ({"Content-Type": "application/xml"}, b"<exception/>", "received application/xml"),
+    ],
+)
+def test_field_request_rejects_bad_response_headers_or_media_type(
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+    body: bytes,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_open_with_retries",
+        lambda *_args, **_kwargs: FakeResponse(body, headers),
+    )
+    with pytest.raises(RetrievalError, match=message):
+        wcs_retrieval._request_field("token", "coverage", 0, 0)
 
 
 def test_latest_complete_search_falls_back_and_writes_traceable_manifest(
@@ -488,6 +709,29 @@ def test_visualization_requires_complete_run_manifest(tmp_path: Path) -> None:
         visualization.render_quicklook(tmp_path, lead_hours=0)
 
 
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("{", "Cannot read retrieval manifest"),
+        ("[]", "not a JSON object"),
+        ('{"status":"complete"}', "no field inventory"),
+    ],
+)
+def test_manifest_reader_rejects_invalid_manifest_shapes(
+    tmp_path: Path,
+    contents: str,
+    message: str,
+) -> None:
+    (tmp_path / "manifest.json").write_text(contents, encoding="utf-8")
+    with pytest.raises(RetrievalError, match=message):
+        visualization._read_manifest(tmp_path)
+
+
+def test_manifest_reader_reports_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(RetrievalError, match="Cannot read retrieval manifest"):
+        visualization._read_manifest(tmp_path)
+
+
 def test_quicklook_renders_one_field_and_writes_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -576,6 +820,124 @@ def test_coordinate_verification_rejects_misaligned_latitudes() -> None:
         visualization._decode_arrays(
             _valid_grib_message(),
             MisalignedGridEccodes(_metadata()),
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("Ni", 10, "grid dimensions"),
+        ("Nj", 10, "grid dimensions"),
+    ],
+)
+def test_coordinate_validation_rejects_wrong_grid_dimensions(
+    key: str,
+    value: int,
+    message: str,
+) -> None:
+    metadata = _metadata()
+    metadata[key] = value
+    with pytest.raises(RetrievalError, match=message):
+        visualization._decode_arrays(_valid_grib_message(), FakeEccodes(metadata))
+
+
+def test_coordinate_validation_rejects_nonfinite_values() -> None:
+    class NonfiniteEccodes(FakeEccodes):
+        @override
+        @staticmethod
+        def codes_get_array(_handle: object, key: str) -> object:
+            if key == "values":
+                values = np.full(1440 * 721, 54_000, dtype=np.float32)
+                values[0] = np.nan
+                return values
+            return FakeEccodes.codes_get_array(_handle, key)
+
+    with pytest.raises(RetrievalError, match="non-finite"):
+        visualization._decode_arrays(_valid_grib_message(), NonfiniteEccodes(_metadata()))
+
+
+def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
+    class MisalignedLongitudeEccodes(FakeEccodes):
+        @override
+        @staticmethod
+        def codes_get_array(_handle: object, key: str) -> object:
+            if key == "longitudes":
+                longitudes = np.tile(np.arange(1440, dtype=np.float64) * 0.25, 721)
+                longitudes[1] += 0.1
+                return longitudes
+            return FakeEccodes.codes_get_array(_handle, key)
+
+    with pytest.raises(RetrievalError, match="longitude coordinates"):
+        visualization._decode_arrays(
+            _valid_grib_message(),
+            MisalignedLongitudeEccodes(_metadata()),
+        )
+
+
+def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
+    class WrongSpacingEccodes(FakeEccodes):
+        @override
+        @staticmethod
+        def codes_get_array(_handle: object, key: str) -> object:
+            if key == "longitudes":
+                return np.tile(np.linspace(0.0, 359.0, 1440), 721)
+            return FakeEccodes.codes_get_array(_handle, key)
+
+    with pytest.raises(RetrievalError, match="documented global"):
+        visualization._decode_arrays(
+            _valid_grib_message(),
+            WrongSpacingEccodes(_metadata()),
+        )
+
+
+def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:
+    manifest = {
+        "status": "complete",
+        "fields": [
+            {
+                "member": 0,
+                "lead_hours": 0,
+                "relative_path": "..\\outside.grib",
+            }
+        ],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RetrievalError, match="local filename"):
+        visualization._load_quicklook_context(tmp_path, lead_hours=0, member=0)
+
+
+def test_selection_rejects_empty_malformed_out_of_range_and_unavailable_values() -> None:
+    with pytest.raises(ValueError, match="cannot be empty"):
+        visualization._parse_selection(
+            (),
+            (0, 1),
+            label="members",
+            minimum=0,
+            maximum=34,
+        )
+    with pytest.raises(ValueError, match="comma-separated integers"):
+        visualization._parse_selection(
+            "bad",
+            (0, 1),
+            label="members",
+            minimum=0,
+            maximum=34,
+        )
+    with pytest.raises(ValueError, match="between 0 and 34"):
+        visualization._parse_selection(
+            "35",
+            (0, 1),
+            label="members",
+            minimum=0,
+            maximum=34,
+        )
+    with pytest.raises(RetrievalError, match="not available"):
+        visualization._parse_selection(
+            "2",
+            (0, 1),
+            label="members",
+            minimum=0,
+            maximum=34,
         )
 
 
