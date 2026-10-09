@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from operator import itemgetter
 from threading import Lock
 from typing import TYPE_CHECKING, Protocol, Self, cast
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
@@ -359,7 +359,7 @@ def _get_capabilities(token: str) -> bytes:
         response = _open_with_retries(request, context="GetCapabilities")
         with response:
             body = response.read(8 * 1024 * 1024 + 1)
-    except (HTTPError, URLError, TimeoutError, OSError) as error:
+    except OSError as error:
         raise RetrievalError(f"GetCapabilities request failed: {error}") from error
     if len(body) > 8 * 1024 * 1024 or b"<" not in body[:100]:
         raise RetrievalError("GetCapabilities response is not a bounded XML document")
@@ -437,6 +437,74 @@ def _open_wcs_request(request: Request, *, context: str) -> _HttpResponse:
     return _open_https(request)
 
 
+def _sleep_before_throttle_retry(
+    error: HTTPError,
+    *,
+    context: str,
+    retry_count: int,
+) -> None:
+    """Wait for a valid service-directed retry, or raise when it is unsafe.
+
+    Raises:
+        RetrievalError: If the failure is not a retryable throttle response.
+
+    """
+    if error.code != HTTP_TOO_MANY_REQUESTS:
+        raise RetrievalError(f"HTTP {error.code} for {context}") from error
+
+    error_body = error.read(4096).decode("utf-8", errors="replace")
+    retry_time = _next_access_time(error_body)
+    if retry_time is None:
+        raise RetrievalError(
+            f"HTTP 429 for {context}; response did not include a valid "
+            "nextAccessTime, so the request cannot be safely retried"
+        ) from error
+    if retry_count >= MAX_THROTTLE_RETRIES:
+        raise RetrievalError(
+            f"HTTP 429 for {context} after {retry_count} throttle retries"
+        ) from error
+
+    remaining = retry_time - datetime.now(UTC)
+    delay = max(0.0, remaining.total_seconds()) + 1.0
+    logger.warning(
+        "WCS throttled %s; retry %d/%d in %.1f s",
+        context,
+        retry_count + 1,
+        MAX_THROTTLE_RETRIES,
+        delay,
+    )
+    time.sleep(delay)
+
+
+def _sleep_before_network_retry(
+    error: OSError,
+    *,
+    context: str,
+    retry_count: int,
+) -> None:
+    """Apply bounded backoff for transient network errors.
+
+    Raises:
+        RetrievalError: If the network retry limit has been reached.
+
+    """
+    if retry_count >= MAX_NETWORK_RETRIES:
+        raise RetrievalError(
+            f"Network failure for {context} after {retry_count} retries: {error}"
+        ) from error
+
+    retry_number = retry_count + 1
+    delay = float(retry_number)
+    logger.warning(
+        "Network retry %d/%d for %s in %.1f s",
+        retry_number,
+        MAX_NETWORK_RETRIES,
+        context,
+        delay,
+    )
+    time.sleep(delay)
+
+
 def _open_with_retries(
     request: Request,
     *,
@@ -447,9 +515,6 @@ def _open_with_retries(
     Returns:
         Open response for the requested field.
 
-    Raises:
-        RetrievalError: If HTTP or network retries are exhausted.
-
     """
     throttle_retries = 0
     network_retries = 0
@@ -457,49 +522,19 @@ def _open_with_retries(
         try:
             return _open_wcs_request(request, context=context)
         except HTTPError as error:
-            retry_time = (
-                _next_access_time(error.read(4096).decode("utf-8", errors="replace"))
-                if error.code == HTTP_TOO_MANY_REQUESTS
-                else None
+            _sleep_before_throttle_retry(
+                error,
+                context=context,
+                retry_count=throttle_retries,
             )
-            if retry_time is None:
-                if error.code == HTTP_TOO_MANY_REQUESTS:
-                    message = (
-                        f"HTTP 429 for {context}; response did not include a valid "
-                        "nextAccessTime, so the request cannot be safely retried"
-                    )
-                else:
-                    message = f"HTTP {error.code} for {context}"
-                raise RetrievalError(message) from error
-            if throttle_retries >= MAX_THROTTLE_RETRIES:
-                raise RetrievalError(
-                    f"HTTP 429 for {context} after {throttle_retries} throttle retries"
-                ) from error
-            delay = max(0.0, (retry_time - datetime.now(UTC)).total_seconds()) + 1.0
             throttle_retries += 1
-            logger.warning(
-                "WCS throttled %s; retry %d/%d in %.1f s",
-                context,
-                throttle_retries,
-                MAX_THROTTLE_RETRIES,
-                delay,
+        except OSError as error:
+            _sleep_before_network_retry(
+                error,
+                context=context,
+                retry_count=network_retries,
             )
-            time.sleep(delay)
-        except (TimeoutError, OSError) as error:
-            if network_retries >= MAX_NETWORK_RETRIES:
-                raise RetrievalError(
-                    f"Network failure for {context} after {network_retries} retries: {error}"
-                ) from error
             network_retries += 1
-            delay = float(network_retries)
-            logger.warning(
-                "Network retry %d/%d for %s in %.1f s",
-                network_retries,
-                MAX_NETWORK_RETRIES,
-                context,
-                delay,
-            )
-            time.sleep(delay)
 
 
 def _request_field(
@@ -547,11 +582,10 @@ def _request_field(
             try:
                 declared_length = int(content_length)
             except ValueError as error:
-                message = (
+                raise RetrievalError(
                     f"Invalid Content-Length {content_length!r} for member {member:03}, "
-                    f"lead {lead_hours} h"
-                )
-                raise RetrievalError(message) from error
+                    f"lead {lead_hours} h",
+                ) from error
             if declared_length > MAX_RESPONSE_BYTES:
                 raise RetrievalError(
                     f"Response Content-Length exceeds {MAX_RESPONSE_BYTES} bytes "

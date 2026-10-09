@@ -254,23 +254,26 @@ def test_next_access_time_formats(
 
 def test_grib_validation_rejects_invalid_framing() -> None:
     eccodes = FakeEccodes(_metadata())
+    initialization = datetime(2026, 10, 4, tzinfo=UTC)
+    invalid_message = b"not-grib"
     with pytest.raises(RetrievalError, match="not one complete GRIB"):
         wcs_retrieval._validate_grib(
-            b"not-grib",
+            invalid_message,
             eccodes,
             member=0,
             lead_hours=0,
-            initialization=datetime(2026, 10, 4, tzinfo=UTC),
+            initialization=initialization,
         )
     malformed_length = bytearray(_valid_grib_message())
     malformed_length[8:16] = (len(malformed_length) + 1).to_bytes(8, "big")
+    malformed_message = bytes(malformed_length)
     with pytest.raises(RetrievalError, match="header declares"):
         wcs_retrieval._validate_grib(
-            bytes(malformed_length),
+            malformed_message,
             eccodes,
             member=0,
             lead_hours=0,
-            initialization=datetime(2026, 10, 4, tzinfo=UTC),
+            initialization=initialization,
         )
 
 
@@ -373,8 +376,9 @@ def test_open_https_only_accepts_configured_https_host() -> None:
         wcs_retrieval.API_BASE_URL.replace("public-api.meteofrance.fr", "example.com") + "/test",
     )
     for url in urls:
+        request = Request(url)
         with pytest.raises(RetrievalError, match="configured HTTPS API host"):
-            wcs_retrieval._open_https(Request(url))
+            wcs_retrieval._open_https(request)
 
 
 def test_wcs_requests_stay_below_rolling_minute_limit(
@@ -464,8 +468,9 @@ def test_request_stops_after_network_retry_limit(
         lambda _request: (_ for _ in ()).throw(TimeoutError("network down")),
     )
     monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    request = Request("https://example.invalid")
     with pytest.raises(RetrievalError, match="after 2 retries"):
-        wcs_retrieval._open_with_retries(Request("https://example.invalid"), context="test")
+        wcs_retrieval._open_with_retries(request, context="test")
 
 
 def test_request_stops_after_throttle_retry_limit(
@@ -491,8 +496,9 @@ def test_request_stops_after_throttle_retry_limit(
     )
     monkeypatch.setattr(wcs_retrieval, "_open_https", raise_throttle)
     monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    request = Request("https://example.invalid")
     with pytest.raises(RetrievalError, match="after 5 throttle retries"):
-        wcs_retrieval._open_with_retries(Request("https://example.invalid"), context="test")
+        wcs_retrieval._open_with_retries(request, context="test")
 
 
 def test_validate_grib_checks_field_identity_and_releases_handle() -> None:
@@ -508,13 +514,15 @@ def test_validate_grib_checks_field_identity_and_releases_handle() -> None:
     assert eccodes.released
 
     mismatch = FakeEccodes(_metadata(member=8, lead=24))
+    message = _valid_grib_message()
+    initialization = datetime(2026, 10, 4, tzinfo=UTC)
     with pytest.raises(RetrievalError, match="metadata mismatch"):
         wcs_retrieval._validate_grib(
-            _valid_grib_message(),
+            message,
             mismatch,
             member=7,
             lead_hours=24,
-            initialization=datetime(2026, 10, 4, tzinfo=UTC),
+            initialization=initialization,
         )
     assert mismatch.released
 
@@ -816,11 +824,10 @@ def test_coordinate_verification_rejects_misaligned_latitudes() -> None:
                 return latitudes
             return FakeEccodes.codes_get_array(_handle, key)
 
+    message = _valid_grib_message()
+    eccodes = MisalignedGridEccodes(_metadata())
     with pytest.raises(RetrievalError, match="latitude coordinates"):
-        visualization._decode_arrays(
-            _valid_grib_message(),
-            MisalignedGridEccodes(_metadata()),
-        )
+        visualization._decode_arrays(message, eccodes)
 
 
 @pytest.mark.parametrize(
@@ -837,8 +844,10 @@ def test_coordinate_validation_rejects_wrong_grid_dimensions(
 ) -> None:
     metadata = _metadata()
     metadata[key] = value
+    grib_message = _valid_grib_message()
+    eccodes = FakeEccodes(metadata)
     with pytest.raises(RetrievalError, match=message):
-        visualization._decode_arrays(_valid_grib_message(), FakeEccodes(metadata))
+        visualization._decode_arrays(grib_message, eccodes)
 
 
 def test_coordinate_validation_rejects_nonfinite_values() -> None:
@@ -852,8 +861,10 @@ def test_coordinate_validation_rejects_nonfinite_values() -> None:
                 return values
             return FakeEccodes.codes_get_array(_handle, key)
 
+    message = _valid_grib_message()
+    eccodes = NonfiniteEccodes(_metadata())
     with pytest.raises(RetrievalError, match="non-finite"):
-        visualization._decode_arrays(_valid_grib_message(), NonfiniteEccodes(_metadata()))
+        visualization._decode_arrays(message, eccodes)
 
 
 def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
@@ -867,11 +878,10 @@ def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
                 return longitudes
             return FakeEccodes.codes_get_array(_handle, key)
 
+    message = _valid_grib_message()
+    eccodes = MisalignedLongitudeEccodes(_metadata())
     with pytest.raises(RetrievalError, match="longitude coordinates"):
-        visualization._decode_arrays(
-            _valid_grib_message(),
-            MisalignedLongitudeEccodes(_metadata()),
-        )
+        visualization._decode_arrays(message, eccodes)
 
 
 def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
@@ -883,11 +893,10 @@ def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
                 return np.tile(np.linspace(0.0, 359.0, 1440), 721)
             return FakeEccodes.codes_get_array(_handle, key)
 
+    message = _valid_grib_message()
+    eccodes = WrongSpacingEccodes(_metadata())
     with pytest.raises(RetrievalError, match="documented global"):
-        visualization._decode_arrays(
-            _valid_grib_message(),
-            WrongSpacingEccodes(_metadata()),
-        )
+        visualization._decode_arrays(message, eccodes)
 
 
 def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:
