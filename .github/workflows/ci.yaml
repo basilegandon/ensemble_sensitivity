@@ -30,7 +30,9 @@ jobs:
         run: uv venv .smoke-venv --python 3.14
 
       - name: Install locked runtime dependencies
-        run: uv sync --locked --no-build --no-dev --no-install-project --python .smoke-venv/bin/python
+        run: uv sync --active --locked --no-build --no-dev --no-install-project --python .smoke-venv/bin/python
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.smoke-venv
 
       - name: Install wheel
         run: |
@@ -44,10 +46,12 @@ jobs:
           cd "$RUNNER_TEMP"
           "$GITHUB_WORKSPACE/.smoke-venv/bin/python" -c '
           import pathlib
+          import cartopy
           import ensemble_sensitivity
 
           package_path = pathlib.Path(ensemble_sensitivity.__file__).resolve()
           assert "site-packages" in package_path.parts, package_path
+          print(f"Cartopy {cartopy.__version__}")
           print(package_path)
           '
         env:

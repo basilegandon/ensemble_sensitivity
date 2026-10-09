@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# PEARP forecast fields and generated quicklooks
+/data/pearp/
+
 # PyPI configuration file
 .pypirc
 

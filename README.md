@@ -93,6 +93,7 @@ Jeu de données **« PE Arpege GLOB025 »** de Météo-France sur data.gouv.fr (
 - Incohérence à garder visible : `DescribeCoverage` énumère 11 coefficients de pression mais annonce une borne haute d'axe à 6. Une sélection globale à 1 000 hPa réussit ; le comportement des niveaux restants et leur combinaison avec la sélection spatiale restent à vérifier avant d'utiliser ces métadonnées comme contrat d'assemblage.
 - Scan GRIB complet du run `202610030600` par plages HTTP `Range` de 32 MiB : les ressources `00:00`, `01:00` et `02:00` contiennent respectivement 3 675, 2 625 et 2 625 messages complets. À `00:00`, Z500 (`paramId=129`, pression 500 hPa) apparaît une fois pour chacun des IDs 0–34 (`number` et `perturbationNumber` concordants), avec `step=0` et une déclaration de 35 membres. Aucun message Z500 500 hPa n'est présent dans les ressources complètes `01:00` et `02:00` ; ce constat porte sur cette variable/niveau, pas sur l'absence d'autres champs ou de données à ces échéances. L'inventaire des autres heures et variables reste à faire.
 - Le pilote `docs/pilot_pearp_wcs.py` a sélectionné le coverage le plus récent annoncé (`2026-10-04T00Z`), puis récupéré séquentiellement les 35 membres aux leads +24 h et +0 h : 70/70 réponses HTTP `200`, validées sur run, lead, membre, niveau, grille globale et unités, sans throttling ni nouvelle tentative réseau. Volume : **145 366 340 octets (138,63 MiB)** en **31,0 s** (moyenne 0,44 s par réponse). Une requête WCS par couple membre/lead est requise : une sélection temporelle `time(0,86400)` a renvoyé `InvalidSubsetting`. Pour chaque lancement, ne déclarer un run complet qu'après validation de tous les couples requis ; chercher le plus récent parmi les candidats ainsi complets, et ne pas confondre coverage annoncée avec données disponibles. Le GRIB data.gouv reste une source indépendante possible de vérification ou de repli, mais le coût comparable d'indexation sur le dernier run n'a pas été mesuré ; le choix primaire pourra être réévalué si le nombre d'échéances ou la volumétrie deviennent contraignants.
+- L'investigation d'une réponse HTTP `429` est documentée dans [`docs/PEARP-data-landscape.md`](docs/PEARP-data-landscape.md). La limite de 400 requêtes/minute communiquée pour l'API n'étant pas chiffrée dans les pages officielles consultées, le client applique une fenêtre glissante à 390 requêtes/minute, réservant dix appels de marge pour d'éventuelles requêtes externes sous le même compte. Le Swagger PEARP indique aussi le code `429` et le tier `Unlimited`; ce dernier ne constitue pas une garantie d'absence de throttling.
 
 ### 3.2 À vérifier (premier jalon)
 
@@ -269,45 +270,116 @@ Choix à trancher (❓) : seuil **par échéance** (plus permissif) ou **commun 
 
 ### 6.1 Flux de données
 
-```
-[Catalogue data.gouv.fr] → [Index GRIB (Range)] → [Extraction Z500 par Range]
-        → [Cache disque (Zarr/NetCDF)] → [Tenseur (N, lat, lon) par échéance]
-        → [Statistiques : z̄, M, seuil] → [Cartes + exports + manifeste]
-```
+Le flux distingue le chemin requis des branches optionnelles. En v1, la
+récupération WCS produit des champs GRIB individuels et un manifeste requis ;
+la visualisation est une commande indépendante qui ne démarre qu'après
+validation d'un manifeste complet.
 
-Le calcul se fait **en flux** : pour chaque échéance, on charge `(35, P)` en mémoire, on calcule `M`, on met à jour le maximum de permutation, puis on libère. La mémoire de travail reste de l'ordre de quelques centaines de Mo.
-
-### 6.2 Modules Python (proposition)
-
-```
-pearp_esa/
-├── catalog.py     # liste des ressources, détection du dernier run complet
-├── gribindex.py   # index des messages GRIB (offset, longueur, paramètre, niveau, membre, échéance)
-├── fetch.py       # téléchargement par Range, cache, reprise sur erreur
-├── decode.py      # décodage GRIB2 → numpy, vérification grille et unités
-├── zone.py        # sélection de zone, poids cos(lat), gestion des longitudes
-├── stats.py       # anomalies, z̄, σ_z̄, carte M, permutations
-├── plot.py        # cartes (colormap divergente centrée sur 0, zone cible, significativité)
-├── manifest.py    # traçabilité d'un run d'analyse
-└── cli.py         # point d'entrée
+```mermaid
+flowchart LR
+    A["GetCapabilities<br/>Entrée : API token<br/>Sortie : candidats de run"] --> B["Sélection du run<br/>Processus : du plus récent au plus ancien"]
+    B --> C["GetCoverage<br/>Entrée : run, lead, membre<br/>Sortie : un GRIB"]
+    C --> D["Validation obligatoire<br/>Processus : GRIB, run, Z500, membre, grille, unités"]
+    D --> E["Persistance atomique<br/>Sortie : 35 champs par lead + manifest.json"]
+    E --> P["Progression fetch<br/>Total : échéances × 35 membres<br/>Affiche Z500, lead et membre"]
+    E --> F{"Tous les couples lead/membre valides ?"}
+    F -->|Oui| G["Statut complete<br/>Artefact amont réutilisable"]
+    F -->|Non| H["Statut failed + diagnostic<br/>Essayer le run précédent"]
+    G --> I["Commande plot indépendante<br/>Entrée : manifest complete + champ choisi"]
+    I --> J["Décodage d'un champ<br/>Vérification coordonnées et valeurs finies"]
+    J --> K["PNG quicklook + JSON de provenance<br/>Plate Carrée + côtes/frontières"]
+    G -. "branche facultative séparée" .-> L["Contrôle qualité / spécification<br/>Rapport optionnel, n'altère pas le statut ingestion"]
 ```
 
-### 6.3 Bibliothèques envisagées 🔶
+La récupération est séquentielle et bornée à un champ GRIB par requête. Le
+quicklook ne décode qu'un membre et une échéance à la fois. Les contrôles
+d'identité scientifique requis (run, membre, échéance, variable, niveau,
+grille et unités) sont des portes du flux d'ingestion, pas une branche qualité
+facultative.
 
-| Besoin              | Candidats                                                         |
-| ------------------- | ----------------------------------------------------------------- |
-| Décodage GRIB2      | `eccodes` (via `cfgrib`/`xarray`), ou `pygrib`                    |
-| Calcul              | `numpy` (produits matriciels BLAS), `xarray` pour les métadonnées |
-| Cache               | `zarr` (découpage par échéance) ou NetCDF                         |
-| Requêtes HTTP Range | `httpx` ou `requests`                                             |
-| Cartes              | `matplotlib` + `cartopy`                                          |
-| Tests               | `pytest`, `hypothesis` pour les propriétés statistiques           |
+### 6.2 Modules Python
 
-Le décodage GRIB dépend d'une bibliothèque binaire (ECMWF eccodes) : prévoir une installation via conda-forge pour éviter les surprises.
+```
+ensemble_sensitivity/
+├── wcs_retrieval.py # catalogue WCS, runs complets, extraction et manifeste requis
+├── visualization.py # décodage isolé d'un champ et quicklook PNG + provenance
+├── stats.py         # anomalies, z̄, σ_z̄, carte M, permutations (étape future)
+└── main.py          # commandes de chaque étape
+```
 
-Le principe de la bibliothèque de checkpoints déjà développée (manifeste JSON, sauvegardes best-effort) peut être réutilisé pour la traçabilité ; à évaluer si elle convient à des tableaux N-D ou si Zarr + manifeste suffit.
+### 6.3 Récupération et quicklook disponibles
 
-### 6.4 Interface en ligne de commande (esquisse)
+L'exécutable `ensemble-sensitivity` expose deux étapes découplées :
+
+```powershell
+uv run ensemble-sensitivity fetch --target-lead-hours 24 --step-hours 24 --output-dir .\data\pearp
+uv run ensemble-sensitivity plot --run-dir .\data\pearp\run_YYYYMMDDHH_t24_s24 --lead-hours 24 --member 0
+```
+
+La première commande journalise le chemin exact du run complet ; le second
+exemple utilise `run_YYYYMMDDHH_t24_s24` comme substitut à ce chemin.
+
+`fetch` lit `PEARP_METEO_FRANCE_API_TOKEN` depuis l'environnement ou
+`.env`, cherche les coverages annoncés du plus récent au plus ancien, puis
+enregistre un GRIB par couple membre/échéance sous `run_YYYYMMDDHH_tT_sS`.
+Un coverage n'est marqué `complete` qu'après validation des 35 membres pour
+toutes les échéances demandées. Les champs validés déjà présents sont
+recontrôlés et réutilisés ; un champ local invalide est retéléchargé. Un
+manifeste `manifest.json` conserve les paramètres, métadonnées GRIB, volumes,
+durées, réutilisations et échecs. Les erreurs de récupération ne sont pas
+masquées ; un candidat incomplet laisse un manifeste `failed` avant l'essai
+d'un run antérieur.
+
+La barre de progression du fetch couvre tous les couples de l'échéance et des
+35 membres du run candidat (par exemple 70 champs pour deux échéances).
+L'étiquette indique la variable, l'échéance, le membre et le run testé ; en
+cas d'échec d'un run, la recherche du suivant démarre une nouvelle progression.
+
+`plot` est une branche de sortie indépendante : elle exige un manifeste
+`complete` et accepte des identifiants séparés par des virgules ou `*`
+(tous les membres et/ou échéances récupérés). La progression compte chaque
+carte et indique son échéance et son membre. Chaque carte est écrite séparément
+en PNG avec un sidecar JSON contenant le manifeste source, les métadonnées,
+les bornes de valeurs, l'attribution et l'empreinte SHA-256 du PNG :
+
+```powershell
+uv run ensemble-sensitivity plot --run-dir <run-dir> --lead-hours "*" --members "*"
+uv run ensemble-sensitivity plot --run-dir <run-dir> --lead-hours 24,48 --members 0,7,34
+```
+
+Les champs WCS vérifiés sont sur une grille géographique `regular_ll` de
+longitude 0–359,75°E et latitude 90°N–90°S. Le rendu vérifie les axes et
+coordonnées ecCodes, recentre les longitudes sur −180°–179,75° pour placer
+l'antiméridien au centre, et utilise la projection Plate Carrée (`PlateCarree`)
+avec une transformation source Plate Carrée. Cartopy superpose continents,
+côtes, frontières et graticule. Au premier rendu, Cartopy peut télécharger les
+contours Natural Earth 1:110m dans son cache local.
+
+Cette visualisation est un contrôle du champ Z500, pas la carte de sensibilité
+M définie en section 4. La validation statistique, les seuils de significativité
+et les cartes M restent des étapes distinctes ; aucune hypothèse ouverte de la
+section 5 n'est tranchée par ce flux.
+
+L'étape optionnelle de contrôle qualité/spécification n'est pas une
+précondition de `fetch` ou `plot` et n'est pas encore implémentée. Elle pourra
+lire le manifeste et les champs validés, produire son propre rapport et être
+lancée sans modifier le statut `complete` de l'ingestion.
+
+### 6.4 Bibliothèques
+
+| Besoin         | Bibliothèques utilisées                                      |
+| -------------- | ------------------------------------------------------------ |
+| Décodage GRIB2 | `eccodes`                                                    |
+| Champs et cartes | `numpy`, `matplotlib`, `cartopy`                            |
+| Transport WCS  | `urllib` (bibliothèque standard)                             |
+| Progression     | `tqdm`                                                       |
+| Tests          | `pytest`                                                      |
+
+Le décodage GRIB dépend d'une bibliothèque native ecCodes. La configuration
+Python installe le binding `eccodes`; l'installation de la bibliothèque
+native reste dépendante de la plateforme.
+
+### 6.5 Interface en ligne de commande (calcul de sensibilité futur)
 
 ```bash
  run ensemble_sensitivity \
@@ -319,7 +391,7 @@ Le principe de la bibliothèque de checkpoints déjà développée (manifeste JS
   --out ./sorties/
 ```
 
-### 6.5 Cœur du calcul (esquisse)
+### 6.6 Cœur du calcul (esquisse)
 
 ```python
 import numpy as np

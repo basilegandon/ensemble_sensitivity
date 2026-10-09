@@ -113,8 +113,63 @@ WCS returns one field per request, request volume scales with 35 × requested
 lead count; revisit the source choice if the default lead set or bandwidth
 budget grows.
 
+### HTTP 429 and quota policy (investigated 4 October 2026)
+
+Météo-France's official [quota FAQ](https://confluence-meteofrance.atlassian.net/wiki/spaces/OpenDataMeteoFrance/pages/457803410)
+says request quotas exist **per API and per portal login account**. Exceeding a
+quota produces HTTP `429 Too Many Requests` and temporarily disables access;
+clients should stop requesting and resume after a sufficient pause. The
+associated [reasonable-use guidance](https://confluence-meteofrance.atlassian.net/wiki/spaces/OpenDataMeteoFrance/pages/457803452)
+recommends sequential rather than parallel requests, a delay between successive
+requests, delayed retries after failures, and caching instead of downloading
+the same resource repeatedly. It also warns that excessive global concurrency
+can cause dropped connections and bandwidth saturation can lead to IP blocking.
+That guidance explicitly says numerical indicators are pending definition by
+Météo-France's IT department.
+
+Consequently, the published material confirms that a quota exists, but does
+**not** specify its numerical threshold or whether it is daily, rolling-window,
+burst-based, or another policy. The local PEARP Swagger describes `429` as
+`ThrottlingLimit` while each operation also declares
+`x-throttling-tier: Unlimited`; that tier label is not a published numeric
+quota and does not override the FAQ's explicit quota/429 behavior. Neither
+document identifies whether the 429 in the supplied trace was caused by a
+quota counter, a short-lived service limit, or earlier calls from another
+process using the same API/login account.
+
+The supplied traceback fails in `GetCapabilities`, before any coverage is
+selected or any member/lead `GetCoverage` fields are requested. Thus the
+`--target-lead-hours 96 --step-hours 24` batch itself had not yet made its
+planned 175 field requests; earlier API usage by this or another process
+remains possible. The stack trace contains only the status, not the response
+body or headers, so it does not tell us whether this particular response
+included a server retry time. A separate 3 October `GetCoverage` 429 did
+include `nextAccessTime=2026-10-03 13:52 UTC`; that is evidence of a
+server-directed temporary retry time on that request, not evidence of a daily
+or rolling quota.
+
+The reported PEARP limit of **400 requests per minute** (communicated for this
+API; not specified in the official pages consulted above) is applied to both
+`GetCapabilities` and `GetCoverage`, including retries. A process-wide sliding
+60-second window limits this client to **390 requests per minute**, with at
+least `60 / 389` seconds between request starts. This smooths traffic and
+reserves ten requests per minute for occasional calls made by other processes
+using the same account, instead of using the entire reported allowance. It
+replaces the former fixed five-second delay. The reserve reduces risk but
+cannot guarantee compliance if other clients using the account consume more
+than ten requests per minute; all such clients need coordinated pacing for a
+strict account-wide guarantee.
+
+On HTTP 429, the client still retries at most five times only when a valid
+`nextAccessTime` is supplied, and otherwise fails with a contextual diagnostic.
+The server-directed wait is honored in addition to the rate limiter. For
+recurring 429s, avoid repeatedly relaunching the fetch; check the API portal's
+account/API usage information and ask Météo-France support to confirm the
+applicable quota/window, providing the request time and endpoint but never the
+API token.
+
 Re-run the pilot (requires the optional ecCodes binding; no project runtime
-dependency is added):
+dependency was added by the original probe):
 
 ```powershell
 uv run --no-project --with eccodes python -m docs.pilot_pearp_wcs --target-lead-hours 24 --step-hours 24
@@ -122,7 +177,36 @@ uv run --no-project --with eccodes python -m docs.pilot_pearp_wcs --target-lead-
 
 The pilot downloads each response into memory only, validates it, then discards
 the GRIB payload. Its JSON measurement report is written to the system temp
-directory by default.
+directory by default. The package pipeline below persists the validated fields
+and is the user-facing retrieval implementation.
+
+### User-facing retrieval and visualization
+
+Install the project dependencies, then fetch the newest complete run and
+render any one validated member/lead separately:
+
+```powershell
+uv sync --locked
+uv run ensemble-sensitivity fetch --target-lead-hours 24 --step-hours 24 --output-dir .\data\pearp
+uv run ensemble-sensitivity plot --run-dir .\data\pearp\run_YYYYMMDDHH_t24_s24 --lead-hours "*" --members "*"
+```
+
+The API token is read from `PEARP_METEO_FRANCE_API_TOKEN` or `.env`; it is sent
+only in the request header. Retrieval writes one GRIB file per required
+member/lead and a `manifest.json` in each candidate run directory. Only a
+manifest with `status: complete` can feed the plot command. The plot command
+reads only its selected field and writes a PNG plus a provenance JSON sidecar.
+These quicklooks show raw geopotential fields; they are not sensitivity maps.
+Replace `run_YYYYMMDDHH_t24_s24` with the complete run directory reported by
+the fetch command. Each command displays a progress bar: fetch counts
+lead/member fields for a candidate run; plot counts each output map. Progress
+labels include the active variable (Z500), lead, and member. Use comma-separated
+IDs for subsets, for example `--lead-hours 24,48 --members 0,7,34`; `*`
+selects all retrieved leads or all 35 members. The quicklook maps use the
+validated geographic coordinates, center the antimeridian, and apply Cartopy's
+Plate Carrée projection with coastlines, borders, land/ocean shading, and a
+graticule. Cartopy may download Natural Earth 1:110m outlines to its local cache
+the first time these maps are rendered.
 
 Reusable probe:
 
