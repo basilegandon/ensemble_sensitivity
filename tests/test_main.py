@@ -25,6 +25,28 @@ def test_parse_args_verbose() -> None:
     assert args.verbose is True
 
 
+def test_parse_plot_args_supports_member_and_lead_lists() -> None:
+    args = parse_args(
+        [
+            "plot",
+            "--run-dir",
+            "run",
+            "--lead-hours",
+            "24,48",
+            "--members",
+            "0,2,34",
+        ]
+    )
+    assert args.lead_hours == "24,48"
+    assert args.members == "0,2,34"
+
+
+def test_parse_plot_args_supports_all_members_and_leads() -> None:
+    args = parse_args(["plot", "--run-dir", "run", "--lead-hours", "*", "--members", "*"])
+    assert args.lead_hours == "*"
+    assert args.members == "*"
+
+
 def test_configure_logging_verbose(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that verbose mode updates the root logger level and initializes logging once."""
     calls: list[int] = []
