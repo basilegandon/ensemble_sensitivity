@@ -897,7 +897,7 @@ def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:
             {
                 "member": 0,
                 "lead_hours": 0,
-                "relative_path": "..\\outside.grib",
+                "relative_path": "../outside.grib",
             }
         ],
     }
