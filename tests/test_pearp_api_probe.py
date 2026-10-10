@@ -14,7 +14,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from docs import probe_pe_arpege_api as probe
+from docs.pearp_data import probe_pe_arpege_api as probe
 
 if TYPE_CHECKING:
     from pathlib import Path

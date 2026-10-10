@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
-from docs.probe_pe_arpege_api import API_BASE_URL, VARIABLE_NAME, read_token
+from docs.pearp_data.probe_pe_arpege_api import API_BASE_URL, VARIABLE_NAME, read_token
 
 if TYPE_CHECKING:
     from email.message import Message
@@ -36,7 +36,7 @@ MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 GRIB_MIN_MESSAGE_BYTES = 20
 HTTP_TIMEOUT_SECONDS = 90
 HTTP_TOO_MANY_REQUESTS = 429
-MAX_THROTTLE_RETRIES = 5
+MAX_THROTTLE_RETRIES = 4
 MAX_NETWORK_RETRIES = 2
 THROTTLE_PATTERN = re.compile(r'"nextAccessTime"\s*:\s*"([^"]+)"')
 
