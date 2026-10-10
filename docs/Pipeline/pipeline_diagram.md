@@ -5,10 +5,12 @@ This document contains the comprehensive pipeline flow diagram showing how data 
 ## Architecture Overview
 
 The pipeline has two main stages implemented in v0.1:
+
 1. **Data Ingestion (fetch)**: WCS retrieval and validation of PEARP Z500 GRIB files
 2. **Visualization (plot)**: Rendering single-member quicklooks from validated fields
 
 Future stages (v1+):
+
 - **Statistics**: Anomaly computation, target aggregation, correlation maps, permutation testing
 - **Output**: Visualization and export of sensitivity maps
 
@@ -23,15 +25,15 @@ graph TB
         B["configure_logging()"]
         C{Command?}
     end
-    
+
     subgraph fetch_stage["🔄 FETCH STAGE: retrieve_latest_complete_run()"]
         direction TB
-        
+
         subgraph ext_input["External Data Sources"]
             API_TOKEN["🔑 .env / env<br/>PEARP_METEO_FRANCE_API_TOKEN"]
             METEO_API["☁️ Météo-France WCS API<br/>public-api.meteofrance.fr"]
         end
-        
+
         subgraph discovery["Discovery & Selection"]
             TOKEN_LOAD["read_token()"]
             CAPS_REQUEST["🔵 _get_capabilities()"]
@@ -39,7 +41,7 @@ graph TB
             CAPS_PARSE["coverage_candidates()"]
             RUN_SELECT["Find latest complete run<br/>Try candidates: newest→oldest"]
         end
-        
+
         subgraph fetch_loop["Fetch Loop: per (lead, member)"]
             LEADS["required_leads()<br/>→ (t₁, t₁-Δt, t₁-2Δt, ..., 0)"]
             FIELD_REQ["🟩 _request_field()<br/>→ GetCoverage + member endpoint"]
@@ -50,19 +52,19 @@ graph TB
             WRITE_ATOMIC["Atomic write:<br/>member_NNN_lead_LLL.grib"]
             GRIB_FILES["(Files) *.grib in run_dir"]
         end
-        
+
         subgraph manifest_write["Manifest Persistence"]
             RECORD["FieldRecord:<br/>member, lead, path, bytes,<br/>elapsed, reused, metadata"]
             MANIFEST_UPDATE["_write_manifest()<br/>→ manifest.json"]
             MANIFEST["(JSON) manifest.json<br/>status: complete|failed<br/>fields: [FieldRecord, ...]<br/>coverage_id, initialization_utc,<br/>target_lead_hours, time_step_hours"]
         end
-        
+
         subgraph error_flow["Error Handling"]
             THROTTLE["HTTP 429?<br/>_sleep_before_throttle_retry()"]
             NET_RETRY["Network error?<br/>_sleep_before_network_retry()"]
             FAIL_MANIFEST["Mark run failed<br/>Try next candidate"]
         end
-        
+
         API_TOKEN --> TOKEN_LOAD
         TOKEN_LOAD --> CAPS_REQUEST
         METEO_API --> CAPS_REQUEST
@@ -86,17 +88,17 @@ graph TB
         THROTTLE --> FAIL_MANIFEST
         NET_RETRY --> FAIL_MANIFEST
     end
-    
+
     subgraph plot_stage["📊 PLOT STAGE: render_quicklooks()"]
         direction TB
-        
+
         subgraph plot_input["Inputs"]
             RUN_DIR["📁 run_dir/<br/>from fetch"]
             LEAD_SEL["lead_hours: str | list"]
             MEMBER_SEL["members: str | list"]
             OUTPUT_DIR["📁 output_dir (optional)"]
         end
-        
+
         subgraph manifest_read["Manifest Validation"]
             READ_MANIFEST["_read_manifest()"]
             MANIFEST_CHECK["Check status == 'complete'"]
@@ -104,7 +106,7 @@ graph TB
             PARSE_SEL["_parse_selection()<br/>Expand '*' and comma-sep"]
             SELECTED_PAIRS["(list) (lead, member) pairs"]
         end
-        
+
         subgraph plot_loop["Plot Loop: per (lead, member)"]
             FIND_FIELD["_find_field()<br/>Locate in manifest"]
             FIELD_PATH["(Path) member_NNN_lead_LLL.grib"]
@@ -113,7 +115,7 @@ graph TB
             ARRAYS["(NDArray) Z500 field +<br/>lon/lat axes"]
             REPROJECT["Re-center longitude:<br/>0-360 → -180-180"]
         end
-        
+
         subgraph render["PNG Rendering"]
             RENDER_PNG["_render_png()<br/>matplotlib + cartopy"]
             FIGURE["(Figure) Plate Carrée projection<br/>+ coastlines, borders, graticule"]
@@ -121,12 +123,12 @@ graph TB
             WRITE_PNG["Atomic write:<br/>z500_member_NNN_lead_LLL.png"]
             PNG_FILE["(File) *.png"]
         end
-        
+
         subgraph provenance["Provenance JSON"]
             WRITE_PROV["_write_provenance()"]
             SIDECAR["(JSON) *.json<br/>created_utc, source_manifest,<br/>member, lead_hours,<br/>grib_metadata, min/max,<br/>output_sha256"]
         end
-        
+
         RUN_DIR --> READ_MANIFEST
         READ_MANIFEST --> MANIFEST_CHECK
         MANIFEST_CHECK --> AVAILABLE
@@ -153,40 +155,40 @@ graph TB
         PNG_FILE --> FINAL_OUT["Output:<br/>PNG + JSON per field"]
         SIDECAR --> FINAL_OUT
     end
-    
+
     subgraph future_stages["🔮 FUTURE STAGES (Not Implemented)"]
         STATS["📈 Stats Module (stats.py)<br/>Anomalies, aggregation, correlation"]
         STATS_OUT["M(s,τ), σ_z̄, permutation test"]
         MAP_VIS["Map Visualization<br/>Sensitivity maps + significance mask"]
         EXPORT["Export:<br/>NetCDF / Zarr + metadata"]
     end
-    
+
     subgraph utilities["🔧 UTILITIES (Generic)"]
         ECCODES["_load_eccodes()<br/>ecCodes library binding"]
         RATE_LIMIT["_wait_for_request_slot()<br/>Enforce API quota:<br/>≤390 req/min rolling window"]
         RETRIES["_open_with_retries()<br/>Bounded network + throttle retries"]
         LOGGING["logger.info/warning/debug<br/>Structured diagnostics"]
     end
-    
+
     C -->|fetch| fetch_stage
     C -->|plot| plot_stage
-    
+
     fetch_stage --> GRIB_FILES
     fetch_stage --> MANIFEST
     GRIB_FILES --> plot_stage
     MANIFEST --> plot_stage
-    
+
     RETRIES -.->|uses| RATE_LIMIT
     FIELD_REQ -.->|uses| RETRIES
     ECCODES -.->|used by| VALIDATE
     ECCODES -.->|used by| DECODE
     LOGGING -.->|everywhere| utilities
-    
+
     plot_stage --> FINAL_OUT
-    
+
     fetch_stage -.->|implements| stats
     plot_stage -.->|feeds| future_stages
-    
+
     style entry fill:#e8f4f8
     style fetch_stage fill:#fff3cd
     style plot_stage fill:#d1ecf1
@@ -218,43 +220,48 @@ graph TB
 
 ### Artifact Types
 
-| Type | Notation | Example |
-|------|----------|---------|
-| External data | `☁️ ...` | API responses |
-| Environment | `🔑 ...` | `.env`, tokens |
-| Directory | `📁 ...` | `run_dir/`, `output_dir/` |
-| GRIB binary | `(Binary)` | Members of `*.grib` |
-| JSON manifest | `(JSON)` | `manifest.json`, `*.json` sidecars |
-| Python objects | `(Dict), (List), (NDArray)` | In-memory structures |
-| PNG image | `(Binary)` | `*.png` quicklook output |
-| XML | `(XML)` | WCS capabilities document |
+| Type           | Notation                    | Example                            |
+| -------------- | --------------------------- | ---------------------------------- |
+| External data  | `☁️ ...`                    | API responses                      |
+| Environment    | `🔑 ...`                    | `.env`, tokens                     |
+| Directory      | `📁 ...`                    | `run_dir/`, `output_dir/`          |
+| GRIB binary    | `(Binary)`                  | Members of `*.grib`                |
+| JSON manifest  | `(JSON)`                    | `manifest.json`, `*.json` sidecars |
+| Python objects | `(Dict), (List), (NDArray)` | In-memory structures               |
+| PNG image      | `(Binary)`                  | `*.png` quicklook output           |
+| XML            | `(XML)`                     | WCS capabilities document          |
 
 ---
 
 ## Function & Module Hierarchy
 
 ### `src/ensemble_sensitivity/main.py`
+
 - **`main(args)`**: Entry point dispatcher
   - Parses CLI arguments
   - Routes to `fetch` or `plot` subcommand
   - Configures logging
 
 ### `src/ensemble_sensitivity/wcs_retrieval.py`
+
 **Case-specific pipeline stage: WCS catalog discovery & field retrieval**
 
 #### Required: Discovery & Selection
+
 - `read_token(env_file)` → API token from `.env` or environment
 - `_get_capabilities(token)` → XML document from WCS server
 - `coverage_candidates(capabilities)` → Sorted (coverage_id, init_time) tuples
 - `required_leads(target, step)` → Tuple of lead hours in descending order
 
 #### Required: Validation (scientific contract)
+
 - `_validate_grib(body, eccodes, member, lead, init)` → metadata dict
   - Checks: paramId=129, level=500, 1440×721 grid
   - Members 0–34, lead_hours, units='m**2 s**-2'
   - Raises `RetrievalError` on mismatch
 
 #### Required: Fetch & Cache
+
 - `_request_field(token, coverage_id, member, lead)` → bytes
 - `_obtain_field(candidate, member, lead, field_path)` → (bytes, metadata, reused)
   - Validates cache; re-fetches if invalid
@@ -262,16 +269,19 @@ graph TB
   - Orchestrates the full fetch-and-validate loop for one run candidate
 
 #### Required: Manifest & Traceability
+
 - `_write_manifest(run_dir, manifest)` → atomic JSON write
 - Manifest schema: status, coverage_id, initialization, leads, fields (with FieldRecord items)
 
 #### Public API
+
 - `retrieve_latest_complete_run(options)` → run_dir
   - Tries candidates newest-to-oldest
   - Returns first complete run
   - Raises `RetrievalError` if none found
 
 #### Utilities (Generic)
+
 - `_load_eccodes()` → ecCodes binding (with helpful error message)
 - `_open_https(request)` → Pinned-host HTTPS only
 - `_open_with_retries(request, context)` → Retried + rate-limited
@@ -282,38 +292,45 @@ graph TB
 ---
 
 ### `src/ensemble_sensitivity/visualization.py`
+
 **Case-specific pipeline stage: Field decoding & quicklook rendering**
 
 #### Required: Manifest Validation
+
 - `_read_manifest(run_dir)` → dict
   - Must have status='complete'
 - `_find_field(manifest, member, lead)` → field record dict
 - `_available_selections(manifest)` → (members_tuple, leads_tuple)
 
 #### Required: Selection Parsing (user input → validated list)
+
 - `_parse_selection(value, candidates, label, min, max)` → tuple
   - Expands `'*'` and comma-separated lists
   - Validates against available
   - Rejects duplicates, out-of-range
 
 #### Required: Field Loading & Coordinate Validation
-- `_load_quicklook_context(run_dir, lead, member, output_path)` → _QuicklookContext
+
+- `_load_quicklook_context(run_dir, lead, member, output_path)` → \_QuicklookContext
 - `_decode_arrays(body, eccodes)` → (values, lon_axis, lat_axis)
   - Validates grid: 1440×721, 0.25°, regular_ll
   - Checks all values are finite
   - Recenters longitudes from [0°, 360°) to [−180°, 180°)
 
 #### Required: Rendering (matplotlib + cartopy)
+
 - `_render_png(context)` → writes atomic PNG
   - Equirectangular (Plate Carrée) projection
   - Coastlines, borders, graticule overlay
   - Title with run, lead, member
 
 #### Required: Provenance Persistence
+
 - `_write_provenance(context)` → writes atomic JSON sidecar
   - Records: manifest source, member, lead, grib metadata, min/max, PNG SHA-256
 
 #### Public API
+
 - `render_quicklooks(run_dir, lead_hours, members, output_dir, output_path)` → tuple[Path, ...]
   - Orchestrates all quicklooks
   - Single progress bar
@@ -322,7 +339,9 @@ graph TB
 ---
 
 ### `src/ensemble_sensitivity/pipeline_checkpoint/pipeline_checkpoint.py`
+
 **Generic utility module: best-effort checkpoint writing (currently unused)**
+
 - Not part of current fetch/plot pipeline
 - Reserved for future M2+ statistics stage observability
 
@@ -437,13 +456,16 @@ run_YYYYMMDDHH_tT_sS/
 def anomalies_ensemble(X: NDArray) -> NDArray:
     """X: (N, P) → X - mean(X, axis=0)"""
 
+
 def target_aggregated(Z_target: NDArray, weights: NDArray) -> tuple[NDArray, float]:
     """Z_target: (N, K) → z_bar (N,), σ_z_bar scalar
     Standardize cells, weight by area, return aggregated target & cohesion."""
 
+
 def sensitivity_map(X: NDArray, z_bar: NDArray, eps: float) -> NDArray:
     """X: (N, P) → M(s) = cov(z_bar, x) / σ_x
     Masked at points where σ_x < eps."""
+
 
 def permutation_threshold(z_bar: NDArray, X: NDArray, B: int, seed: int) -> float:
     """Compute 95th percentile threshold via permutation test.
