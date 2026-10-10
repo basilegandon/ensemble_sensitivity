@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
-from docs.probe_pe_arpege_api import API_BASE_URL, VARIABLE_NAME, read_token
+from docs.PEARP_data.probe_pe_arpege_api import API_BASE_URL, VARIABLE_NAME, read_token
 
 if TYPE_CHECKING:
     from email.message import Message
