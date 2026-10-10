@@ -31,7 +31,7 @@ GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z
 - axes `long lat pressure time`, units `deg deg hPa ISO8601`;
 - full-globe bounds: longitude 0–359.75, latitude −90–90;
 - pressure coefficients `50, 200, 250, 300, 400, 500, 700, 800, 850, 925,
-  1000` hPa;
+1000` hPa;
 - forecast-time coefficients 0, 10,800, ..., 367,200 seconds: 35 steps from
   0 to 102 h at 3-hour intervals;
 - initialization 2026-10-03 06Z and valid-time end 2026-10-07 12Z.
@@ -78,7 +78,7 @@ An attempted multi-time subset `time(0,86400)` returned HTTP 404
 `InvalidSubsetting`; the service therefore required one `GetCoverage` per
 member and lead in this test.
 
-`docs/pilot_pearp_wcs.py` then queried the 35 API member endpoints sequentially
+`docs/PEARP_data/pilot_pearp_wcs.py` then queried the 35 API member endpoints sequentially
 for each of +24 h and +0 h. All 70 requests returned HTTP 200; each response
 decoded to exactly one full-globe Z500 message and passed checks for
 initialization, lead, member ID, parameter 129, isobaric level 500, ensemble
@@ -86,14 +86,14 @@ size 35, regular lat/lon 1440 × 721 grid, and units `m**2 s**-2`. Member
 `number` and `perturbationNumber` matched every route ID from 000 to 034 at
 both leads. No throttling or network retries occurred.
 
-| Metric | Observed |
-| --- | ---: |
-| Requests | 70 / 70 succeeded |
-| Payload per field | 2,076,662 bytes |
-| Total WCS payload | 145,366,340 bytes (138.63 MiB) |
-| Wall time | 31.022 s |
-| Mean per-request elapsed time | 0.441 s |
-| HTTP 429 / retries | 0 / 0 |
+| Metric                        |                       Observed |
+| ----------------------------- | -----------------------------: |
+| Requests                      |              70 / 70 succeeded |
+| Payload per field             |                2,076,662 bytes |
+| Total WCS payload             | 145,366,340 bytes (138.63 MiB) |
+| Wall time                     |                       31.022 s |
+| Mean per-request elapsed time |                        0.441 s |
+| HTTP 429 / retries            |                          0 / 0 |
 
 A same-run +24 h regional query for member 000 returned a 232-byte, 5 × 5
 message. Its 25 decoded values exactly matched the corresponding cells from
@@ -211,11 +211,11 @@ the first time these maps are rendered.
 Reusable probe:
 
 ```powershell
-python docs\probe_pe_arpege_api.py
-python docs\probe_pe_arpege_api.py --title-filter "Geopotential height"
-python docs\probe_pe_arpege_api.py --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z"
-python docs\probe_pe_arpege_api.py --member 034
-python docs\probe_pe_arpege_api.py --get-coverage --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z" --subset "pressure(500)" --subset "time(86400)" --subset "long(0,1)" --subset "lat(45,46)" --output "$env:TEMP\pearp-api-z500-sample.grib"
+python docs\PEARP_data\probe_pe_arpege_api.py
+python docs\PEARP_data\probe_pe_arpege_api.py --title-filter "Geopotential height"
+python docs\PEARP_data\probe_pe_arpege_api.py --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z"
+python docs\PEARP_data\probe_pe_arpege_api.py --member 034
+python docs\PEARP_data\probe_pe_arpege_api.py --get-coverage --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z" --subset "pressure(500)" --subset "time(86400)" --subset "long(0,1)" --subset "lat(45,46)" --output "$env:TEMP\pearp-api-z500-sample.grib"
 ```
 
 ## data.gouv.fr GRIB2 resource set
@@ -233,11 +233,11 @@ in the dataset.
 
 The downloaded GRIB2 messages decode with ecCodes as follows:
 
-| Forecast lead | Resource size | Z500 message offset | Message size | Member | GRIB `step` |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 h | 2,862,685,455 bytes | 36,404,734 | 700,368 bytes | 0 | 0 |
-| 24 h | 4,009,661,534 bytes | 59,940,203 | 689,516 bytes | 0 | 24 |
-| 102 h | 3,861,451,479 bytes | 57,482,745 | 677,223 bytes | 0 | 102 |
+| Forecast lead |       Resource size | Z500 message offset |  Message size | Member | GRIB `step` |
+| ------------: | ------------------: | ------------------: | ------------: | -----: | ----------: |
+|           0 h | 2,862,685,455 bytes |          36,404,734 | 700,368 bytes |      0 |           0 |
+|          24 h | 4,009,661,534 bytes |          59,940,203 | 689,516 bytes |      0 |          24 |
+|         102 h | 3,861,451,479 bytes |          57,482,745 | 677,223 bytes |      0 |         102 |
 
 In each sample, Z500 is GRIB2 `paramId=129`, `shortName=z`,
 `typeOfLevel=isobaricInhPa`, level 500, units `m**2 s**-2`, and the message's
@@ -265,11 +265,11 @@ The server returned the exact requested `Content-Range` for every chunk. The
 scan covered 7,471,944,527 bytes in 224 ranges and decoded 8,925 complete GRIB
 messages:
 
-| Resource lead | File bytes scanned | Complete messages | Z500 500-hPa messages | Z500 member IDs / result |
-| ---: | ---: | ---: | ---: | --- |
-| 0 h | 2,862,685,455 | 3,675 | 35 | Exactly once each: 0–34 |
-| 1 h | 2,314,432,767 | 2,625 | 0 | No Z500 field at this lead |
-| 2 h | 2,294,826,305 | 2,625 | 0 | No Z500 field at this lead |
+| Resource lead | File bytes scanned | Complete messages | Z500 500-hPa messages | Z500 member IDs / result   |
+| ------------: | -----------------: | ----------------: | --------------------: | -------------------------- |
+|           0 h |      2,862,685,455 |             3,675 |                    35 | Exactly once each: 0–34    |
+|           1 h |      2,314,432,767 |             2,625 |                     0 | No Z500 field at this lead |
+|           2 h |      2,294,826,305 |             2,625 |                     0 | No Z500 field at this lead |
 
 For the +0 h resource, every Z500 message has `step=0`,
 `numberOfForecastsInEnsemble=35`, and `number=perturbationNumber`, covering all
