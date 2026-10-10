@@ -78,7 +78,7 @@ An attempted multi-time subset `time(0,86400)` returned HTTP 404
 `InvalidSubsetting`; the service therefore required one `GetCoverage` per
 member and lead in this test.
 
-`docs/PEARP_data/pilot_pearp_wcs.py` then queried the 35 API member endpoints sequentially
+`docs/pearp_data/pilot_pearp_wcs.py` then queried the 35 API member endpoints sequentially
 for each of +24 h and +0 h. All 70 requests returned HTTP 200; each response
 decoded to exactly one full-globe Z500 message and passed checks for
 initialization, lead, member ID, parameter 129, isobaric level 500, ensemble
@@ -211,11 +211,11 @@ the first time these maps are rendered.
 Reusable probe:
 
 ```powershell
-python docs\PEARP_data\probe_pe_arpege_api.py
-python docs\PEARP_data\probe_pe_arpege_api.py --title-filter "Geopotential height"
-python docs\PEARP_data\probe_pe_arpege_api.py --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z"
-python docs\PEARP_data\probe_pe_arpege_api.py --member 034
-python docs\PEARP_data\probe_pe_arpege_api.py --get-coverage --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z" --subset "pressure(500)" --subset "time(86400)" --subset "long(0,1)" --subset "lat(45,46)" --output "$env:TEMP\pearp-api-z500-sample.grib"
+python docs\pearp_data\probe_pe_arpege_api.py
+python docs\pearp_data\probe_pe_arpege_api.py --title-filter "Geopotential height"
+python docs\pearp_data\probe_pe_arpege_api.py --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z"
+python docs\pearp_data\probe_pe_arpege_api.py --member 034
+python docs\pearp_data\probe_pe_arpege_api.py --get-coverage --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z" --subset "pressure(500)" --subset "time(86400)" --subset "long(0,1)" --subset "lat(45,46)" --output "$env:TEMP\pearp-api-z500-sample.grib"
 ```
 
 ## data.gouv.fr GRIB2 resource set
