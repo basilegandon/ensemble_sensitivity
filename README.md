@@ -297,6 +297,9 @@ d'identité scientifique requis (run, membre, échéance, variable, niveau,
 grille et unités) sont des portes du flux d'ingestion, pas une branche qualité
 facultative.
 
+Le diagramme détaillé reliant les fonctions de `main.py` à leurs entrées,
+artefacts et sorties est décrit dans [`docs/code_data_flow.md`](docs/code_data_flow.md).
+
 ### 6.2 Modules Python
 
 ```
