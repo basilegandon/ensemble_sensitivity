@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,9 @@ def main() -> int:
         The Git exit status, or zero when no push is necessary.
 
     """
+    if os.environ.get("PRE_COMMIT_CHECKOUT_TYPE") == "0":
+        return 0
+
     branch_result = _git("symbolic-ref", "--quiet", "--short", "HEAD")
     if branch_result.returncode != 0:
         return 0
@@ -67,8 +71,7 @@ def main() -> int:
             branch,
             push_result.stderr.strip(),
         )
-        return push_result.returncode
-    return 0
+    return push_result.returncode
 
 
 if __name__ == "__main__":

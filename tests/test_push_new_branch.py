@@ -90,6 +90,16 @@ def test_skips_detached_head(monkeypatch: pytest.MonkeyPatch) -> None:
     assert push_new_branch.main() == 0
 
 
+def test_skips_file_only_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Do not invoke Git for a pre-commit file-only checkout event."""
+    fake_git = Mock(side_effect=AssertionError("Git should not be invoked"))
+    monkeypatch.setattr(push_new_branch, "_git", fake_git)
+    monkeypatch.setenv("PRE_COMMIT_CHECKOUT_TYPE", "0")
+
+    assert push_new_branch.main() == 0
+    fake_git.assert_not_called()
+
+
 def test_reports_missing_origin_without_trying_to_push(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
