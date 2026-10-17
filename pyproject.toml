@@ -25,11 +25,11 @@ ensemble-sensitivity = "ensemble_sensitivity.main:main"
 dev = [
     "bandit>=1.9.4",
     "hatchling>=1.32.0",
-    "mypy>=2.3.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.7",
+    "ty>=0.0.89",
     "types-defusedxml>=0.7.0.20250822",
     "types-tqdm>=4.67.0.20250809",
 ]
@@ -46,7 +46,7 @@ target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
-# Very aggressive: enable every Ruff rule.
+# Strictest linting: enable every Ruff rule, including preview rules.
 select = ["ALL"]
 
 # These two rules conflict with Ruff's formatter.
@@ -122,6 +122,11 @@ preview = true
     "raw-string-in-exception",
     "raise-vanilla-args",
 ]
+# Git must be invoked without a shell by this hook.
+"scripts/push_new_branch.py" = [
+    "suspicious-subprocess-import",
+    "subprocess-without-shell-equals-true",
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -131,49 +136,18 @@ skip-magic-trailing-comma = false
 docstring-code-format = true
 
 # ---------------------------------------------------------------------------
-# mypy
+# ty
 # ---------------------------------------------------------------------------
 
-[tool.mypy]
-python_version = "3.14"
+[tool.ty.rules]
+# Enable every type-checking rule as an error.
+all = "error"
 
-# The important one.
-strict = true
-
-# Additional checks beyond the normal strict preset.
-warn_unreachable = true
-warn_unused_configs = true
-extra_checks = true
-
-# Make the intent explicit even though most are already implied by strict.
-disallow_any_generics = true
-disallow_subclassing_any = true
-disallow_untyped_defs = true
-disallow_untyped_calls = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-
-no_implicit_optional = true
-warn_return_any = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-
-strict_equality = true
-strict_bytes = true
-
-# Require explicit overrides when overriding methods.
-enable_error_code = [
-    "explicit-override",
-    "deprecated",
-]
-
-# Don't silently accept missing third-party stubs.
-ignore_missing_imports = false
-
-[[tool.mypy.overrides]]
-module = ["cartopy.*"]
-ignore_missing_imports = true
+[tool.ty.analysis]
+# Prefer conservative, sound narrowing over convenience.
+strict-equality-semantics = true
+strict-generic-narrowing = true
+respect-type-ignore-comments = false
 
 # ---------------------------------------------------------------------------
 # Pytest

@@ -24,4 +24,4 @@ Before changing code:
 
 - Add focused tests for the changed behavior, with small synthetic fixtures rather than external forecast downloads.
 - Test numerical invariants, boundary cases, and invalid-input behavior; use fixed seeds for stochastic tests.
-- Run the relevant Ruff, strict mypy, and pytest checks using the locked `uv` environment. Report checks that could not be run.
+- Run the relevant Ruff, strict ty, and pytest checks using the locked `uv` environment. Report checks that could not be run.

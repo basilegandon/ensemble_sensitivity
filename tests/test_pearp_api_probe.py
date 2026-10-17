@@ -8,7 +8,7 @@ import io
 import logging
 import sys
 from email.message import Message
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, override
 from urllib.error import HTTPError, URLError
 from xml.etree import ElementTree as ET
 
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from urllib.request import Request
 
 
-class FakeResponse:
+class FakeResponse(probe._HttpResponse):
     """Small context-managed HTTP response for deterministic probe tests."""
 
     def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
@@ -33,21 +33,25 @@ class FakeResponse:
             self.headers[key] = value
         self.status = 200
 
+    @override
     def __enter__(self) -> Self:
         """Return this response for a context-managed request."""
         return self
 
+    @override
     def read(self, amount: int = -1, /) -> bytes:
         """Return at most the requested number of response bytes."""
         return self.body if amount < 0 else self.body[:amount]
 
+    @override
     def __exit__(
         self,
-        _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: TracebackType | None,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
         """Close the fake response without side effects."""
+        del exc_type, exc_value, traceback
 
 
 def _http_error(code: int, body: bytes, headers: dict[str, str] | None = None) -> HTTPError:

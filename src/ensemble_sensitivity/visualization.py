@@ -30,6 +30,7 @@ from ensemble_sensitivity.wcs_retrieval import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from cartopy.mpl.geoaxes import GeoAxes
     from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
@@ -250,7 +251,7 @@ def _render_png(context: _QuicklookContext) -> None:
     geographic_crs = ccrs.PlateCarree()
     figure = plt.figure(figsize=(13, 6.5), constrained_layout=True)
     try:
-        axes = figure.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        axes = cast("GeoAxes", figure.add_subplot(1, 1, 1, projection=ccrs.PlateCarree()))
         extent = (
             float(context.longitude_axis[0] - 0.125),
             float(context.longitude_axis[-1] + 0.125),

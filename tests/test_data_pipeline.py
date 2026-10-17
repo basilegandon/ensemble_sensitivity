@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-class FakeEccodes:
+class FakeEccodes(visualization._ArrayEccodes):
     """Provide deterministic metadata and optional coordinate arrays."""
 
     def __init__(self, metadata: dict[str, int | float | str]) -> None:
@@ -38,27 +38,33 @@ class FakeEccodes:
         self.metadata = metadata
         self.released = False
 
-    def codes_get(self, _handle: object, key: str) -> int | float | str:
+    @override
+    def codes_get(self, handle: object, key: str) -> int | float | str:
         """Return the configured scalar key."""
+        del handle
         return self.metadata[key]
 
-    @staticmethod
-    def codes_new_from_message(_message: bytes) -> object:
+    @override
+    def codes_new_from_message(self, message: bytes) -> object:
         """Return a stand-in handle."""
+        del message
         return object()
 
-    def codes_release(self, _handle: object) -> None:
+    @override
+    def codes_release(self, handle: object) -> None:
         """Record handle release."""
+        del handle
         self.released = True
 
-    @staticmethod
-    def codes_get_array(_handle: object, key: str) -> object:
+    @override
+    def codes_get_array(self, handle: object, key: str) -> object:
         """Return deterministic global-grid fields and coordinate axes.
 
         Raises:
             KeyError: If the requested array is not part of the fake GRIB message.
 
         """
+        del handle
         if key == "values":
             return np.full(1440 * 721, 54_000, dtype=np.float32)
         if key == "longitudes":
@@ -813,8 +819,7 @@ def test_coordinates_are_validated_and_recentered_at_antimeridian() -> None:
 def test_coordinate_verification_rejects_misaligned_latitudes() -> None:
     class MisalignedGridEccodes(FakeEccodes):
         @override
-        @staticmethod
-        def codes_get_array(_handle: object, key: str) -> object:
+        def codes_get_array(self, handle: object, key: str) -> object:
             if key == "latitudes":
                 latitudes = np.repeat(
                     90.0 - np.arange(721, dtype=np.float64) * 0.25,
@@ -822,7 +827,7 @@ def test_coordinate_verification_rejects_misaligned_latitudes() -> None:
                 )
                 latitudes[0] = 89.75
                 return latitudes
-            return FakeEccodes.codes_get_array(_handle, key)
+            return super().codes_get_array(handle, key)
 
     message = _valid_grib_message()
     eccodes = MisalignedGridEccodes(_metadata())
@@ -853,13 +858,12 @@ def test_coordinate_validation_rejects_wrong_grid_dimensions(
 def test_coordinate_validation_rejects_nonfinite_values() -> None:
     class NonfiniteEccodes(FakeEccodes):
         @override
-        @staticmethod
-        def codes_get_array(_handle: object, key: str) -> object:
+        def codes_get_array(self, handle: object, key: str) -> object:
             if key == "values":
                 values = np.full(1440 * 721, 54_000, dtype=np.float32)
                 values[0] = np.nan
                 return values
-            return FakeEccodes.codes_get_array(_handle, key)
+            return super().codes_get_array(handle, key)
 
     message = _valid_grib_message()
     eccodes = NonfiniteEccodes(_metadata())
@@ -870,13 +874,12 @@ def test_coordinate_validation_rejects_nonfinite_values() -> None:
 def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
     class MisalignedLongitudeEccodes(FakeEccodes):
         @override
-        @staticmethod
-        def codes_get_array(_handle: object, key: str) -> object:
+        def codes_get_array(self, handle: object, key: str) -> object:
             if key == "longitudes":
                 longitudes = np.tile(np.arange(1440, dtype=np.float64) * 0.25, 721)
                 longitudes[1] += 0.1
                 return longitudes
-            return FakeEccodes.codes_get_array(_handle, key)
+            return super().codes_get_array(handle, key)
 
     message = _valid_grib_message()
     eccodes = MisalignedLongitudeEccodes(_metadata())
@@ -887,11 +890,10 @@ def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
 def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
     class WrongSpacingEccodes(FakeEccodes):
         @override
-        @staticmethod
-        def codes_get_array(_handle: object, key: str) -> object:
+        def codes_get_array(self, handle: object, key: str) -> object:
             if key == "longitudes":
                 return np.tile(np.linspace(0.0, 359.0, 1440), 721)
-            return FakeEccodes.codes_get_array(_handle, key)
+            return super().codes_get_array(handle, key)
 
     message = _valid_grib_message()
     eccodes = WrongSpacingEccodes(_metadata())

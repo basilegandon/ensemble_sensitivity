@@ -1,0 +1,76 @@
+# Copyright (C) 2026 Basile Gandon
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Push a checked-out local branch when it does not have an upstream."""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+import sys
+
+LOGGER = logging.getLogger(__name__)
+GIT_EXECUTABLE = shutil.which("git")
+
+
+def _git(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run Git and capture its output for actionable hook diagnostics.
+
+    Returns:
+        The process result.
+
+    """
+    if GIT_EXECUTABLE is None:
+        LOGGER.error("Cannot push a new branch: Git is not available on PATH.")
+        return subprocess.CompletedProcess(["git", *arguments], 127, "", "")
+    return subprocess.run(
+        [GIT_EXECUTABLE, *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def main() -> int:
+    """Push the current branch to origin if it has no upstream.
+
+    Returns:
+        The Git exit status, or zero when no push is necessary.
+
+    """
+    branch_result = _git("symbolic-ref", "--quiet", "--short", "HEAD")
+    if branch_result.returncode != 0:
+        return 0
+    branch = branch_result.stdout.strip()
+
+    upstream_result = _git(
+        "for-each-ref",
+        "--format=%(upstream)",
+        f"refs/heads/{branch}",
+    )
+    if upstream_result.returncode != 0:
+        LOGGER.error("Unable to determine the upstream for branch %s.", branch)
+        return upstream_result.returncode
+    if upstream_result.stdout.strip():
+        return 0
+
+    remote_result = _git("remote", "get-url", "origin")
+    if remote_result.returncode != 0:
+        LOGGER.error("Cannot push branch %s: remote 'origin' is not configured.", branch)
+        return remote_result.returncode
+
+    LOGGER.info("Pushing branch %s to origin and setting its upstream.", branch)
+    push_result = _git("push", "--set-upstream", "origin", "HEAD")
+    if push_result.returncode != 0:
+        LOGGER.error(
+            "Unable to push branch %s to origin: %s",
+            branch,
+            push_result.stderr.strip(),
+        )
+        return push_result.returncode
+    return 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    sys.exit(main())

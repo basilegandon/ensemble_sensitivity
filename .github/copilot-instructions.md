@@ -9,7 +9,7 @@ This is a Python project for exploratory ensemble sensitivity analysis of PEARP 
 - Treat checkpoint persistence as optional observability: its documented best-effort behavior must not be generalized to scientific computation, data ingestion, or validation failures.
 - Preserve lazy and bounded-memory behavior where relevant. Do not collect, copy, or materialize large arrays/dataframes without a clear need.
 - Add or update focused tests for changed behavior, including edge cases and scientific invariants. Use deterministic inputs/seeds for stochastic calculations.
-- Keep changes scoped to the request and follow the existing Python 3.14, `uv`, Ruff, strict mypy, pytest, and Bandit configuration in `pyproject.toml`.
+- Keep changes scoped to the request and follow the existing Python 3.14, `uv`, Ruff, strict ty, pytest, and Bandit configuration in `pyproject.toml`.
 
 ## Validation
 
@@ -18,9 +18,23 @@ Use the repository's locked environment and run the smallest applicable checks. 
 ```bash
 uv run --locked --no-sync --no-build ruff format --check .
 uv run --locked --no-sync --no-build ruff check .
-uv run --locked --no-sync --no-build mypy .
+uv run --locked --no-sync --no-build ty check .
 uv run --locked --no-sync --no-build bandit -r src
 uv run --locked --no-sync --no-build pytest
 ```
 
 If a check cannot run, state why and do not imply it passed.
+
+## Git hooks
+
+After cloning the repository, install its local hooks once:
+
+```bash
+uv run --locked --no-sync --no-build pre-commit install
+```
+
+This installs the commit checks and a post-checkout hook. When a checked-out
+branch has no upstream, the hook immediately pushes it to `origin` and sets
+that upstream. Git worktrees sharing this repository use the installed hooks.
+Each push triggers the existing CI and SonarQube scan when `SONAR_TOKEN` is
+configured.

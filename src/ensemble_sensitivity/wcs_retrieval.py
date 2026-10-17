@@ -24,7 +24,7 @@ from defusedxml import ElementTree
 from tqdm import tqdm
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
     from email.message import Message
     from pathlib import Path
     from types import TracebackType
@@ -189,7 +189,7 @@ def read_token(env_file: Path) -> str:
 
     """
     token = os.environ.get(VARIABLE_NAME)
-    if token:
+    if token is not None and len(token) > 0:
         return token
     for raw_line in env_file.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -578,7 +578,7 @@ def _request_field(
     with response:
         content_type = response.headers.get("Content-Type", "unknown")
         content_length = response.headers.get("Content-Length")
-        if content_length:
+        if content_length is not None and len(content_length) > 0:
             try:
                 declared_length = int(content_length)
             except ValueError as error:
@@ -615,7 +615,7 @@ def _candidate_dir(output_dir: Path, initialization: datetime, target: int, step
     return output_dir / name
 
 
-def _write_manifest(run_dir: Path, manifest: dict[str, object]) -> None:
+def _write_manifest(run_dir: Path, manifest: Mapping[str, object]) -> None:
     """Atomically persist required run traceability."""
     path = run_dir / "manifest.json"
     temporary_path = path.with_suffix(".json.tmp")
@@ -639,12 +639,11 @@ def _obtain_field(
         GRIB bytes, validated metadata, and whether the field was reused.
 
     """
-    reused = field_path.is_file()
-    if reused:
-        body = field_path.read_bytes()
+    if field_path.is_file():
+        cached_body = field_path.read_bytes()
         try:
             metadata = _validate_grib(
-                body,
+                cached_body,
                 candidate.eccodes,
                 member=member,
                 lead_hours=lead,
@@ -652,20 +651,21 @@ def _obtain_field(
             )
         except RetrievalError:
             logger.warning("Cached GRIB field failed validation; fetching again: %s", field_path)
-            reused = False
-    if not reused:
-        body = _request_field(candidate.token, candidate.coverage_id, member, lead)
-        metadata = _validate_grib(
-            body,
-            candidate.eccodes,
-            member=member,
-            lead_hours=lead,
-            initialization=candidate.initialization,
-        )
-        temporary_path = field_path.with_suffix(".grib.tmp")
-        temporary_path.write_bytes(body)
-        temporary_path.replace(field_path)
-    return body, metadata, reused
+        else:
+            return cached_body, metadata, True
+
+    body = _request_field(candidate.token, candidate.coverage_id, member, lead)
+    metadata = _validate_grib(
+        body,
+        candidate.eccodes,
+        member=member,
+        lead_hours=lead,
+        initialization=candidate.initialization,
+    )
+    temporary_path = field_path.with_suffix(".grib.tmp")
+    temporary_path.write_bytes(body)
+    temporary_path.replace(field_path)
+    return body, metadata, False
 
 
 def _run_candidate(candidate: _CandidateRequest) -> Path:
