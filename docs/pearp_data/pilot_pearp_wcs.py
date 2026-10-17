@@ -426,7 +426,7 @@ def _get_capabilities(token: str) -> bytes:
         f"{API_BASE_URL}{CAPABILITIES_PATH}?{query}",
         headers={"apikey": token, "Accept": "application/xml", "Cache-Control": "no-cache"},
     )
-    response: _HttpResponse = urlopen(request, timeout=HTTP_TIMEOUT_SECONDS)
+    response = cast("_HttpResponse", urlopen(request, timeout=HTTP_TIMEOUT_SECONDS))
     with response:
         body = response.read()
     if b"<" not in body[:100]:
@@ -459,7 +459,7 @@ def _open_with_retries(
     network_retries = 0
     while True:
         try:
-            response: _HttpResponse = urlopen(request, timeout=HTTP_TIMEOUT_SECONDS)
+            response = cast("_HttpResponse", urlopen(request, timeout=HTTP_TIMEOUT_SECONDS))
         except HTTPError as error:
             wait_seconds = _throttle_retry_delay(error, member, lead_hours, throttle_retries)
             throttle_retries += 1
@@ -514,7 +514,11 @@ def _validate_response(
     lead_hours = field_request.lead_hours
     content_type = response.headers.get("Content-Type", "unknown")
     content_length = response.headers.get("Content-Length")
-    if content_length and int(content_length) > MAX_RESPONSE_BYTES:
+    if (
+        content_length is not None
+        and len(content_length) > 0
+        and int(content_length) > MAX_RESPONSE_BYTES
+    ):
         message = (
             f"Response Content-Length {content_length} exceeds "
             f"{MAX_RESPONSE_BYTES} bytes for member {member:03}, lead {lead_hours} h"
@@ -656,7 +660,7 @@ def run_pilot(options: PilotOptions) -> int:
                 result.bytes_received,
                 result.elapsed_seconds,
             )
-        if failure:
+        if failure is not None:
             break
 
     complete = len(results) == len(leads) * len(MEMBERS)

@@ -84,7 +84,7 @@ jobs:
         run: uv run --locked --no-sync --no-build ruff check .
 
       - name: Type check
-        run: uv run --locked --no-sync --no-build mypy .
+        run: uv run --locked --no-sync --no-build ty check .
 
       - name: Security check
         run: uv run --locked --no-sync --no-build bandit -r src

@@ -418,7 +418,7 @@ def checkpoint[**P, R](
     """
 
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
-        label = _sanitize_label(name or f.__name__)
+        label = _sanitize_label(name or getattr(f, "__name__", type(f).__name__))
         config = _CheckpointConfig(label=label, track_inputs=track_inputs)
 
         if inspect.iscoroutinefunction(f):

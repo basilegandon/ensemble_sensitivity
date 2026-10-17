@@ -11,7 +11,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self
+from typing import TYPE_CHECKING, Protocol, Self, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -127,7 +127,7 @@ def request_xml(token: str, member: str, operation: str, params: dict[str, str])
         },
     )
     try:
-        response: _HttpResponse = urlopen(request, timeout=30)
+        response = cast("_HttpResponse", urlopen(request, timeout=30))
         with response:
             logger.info("HTTP status: %d", response.status)
             logger.info("Content-Type: %s", response.headers.get("Content-Type", "unknown"))
@@ -167,7 +167,7 @@ def _read_coverage_response(
     content_length = response.headers.get("Content-Length")
     logger.info("HTTP status: %d", response.status)
     logger.info("Content-Type: %s", content_type)
-    if content_length and int(content_length) > max_bytes:
+    if content_length is not None and len(content_length) > 0 and int(content_length) > max_bytes:
         logger.error("Response Content-Length %s exceeds limit %d", content_length, max_bytes)
         return None
     body = response.read(max_bytes + 1)
@@ -205,7 +205,7 @@ def request_coverage(token: str, options: _CoverageRequest) -> int:
         headers={"apikey": token, "Accept": "application/wmo-grib", "Cache-Control": "no-cache"},
     )
     try:
-        response: _HttpResponse = urlopen(request, timeout=60)
+        response = cast("_HttpResponse", urlopen(request, timeout=60))
     except HTTPError as error:
         error_body = error.read(2048).decode("utf-8", errors="replace")
         safe_body = error_body.replace(token, REDACTED_VALUE)
@@ -252,7 +252,11 @@ def _capabilities_summary(body: bytes, title_filter: str | None) -> None:
     logger.info("Coverage count: %d", sum(len(ids) for ids in by_title.values()))
     logger.info("Distinct coverage titles: %d", len(by_title))
     for title, coverage_ids in sorted(by_title.items()):
-        if title_filter and title_filter.casefold() not in title.casefold():
+        if (
+            title_filter is not None
+            and len(title_filter) > 0
+            and title_filter.casefold() not in title.casefold()
+        ):
             continue
         run_ids = sorted({coverage_id.split("___", 1)[-1] for coverage_id in coverage_ids})
         logger.info("%s: %d coverages; %s .. %s", title, len(coverage_ids), run_ids[0], run_ids[-1])
@@ -284,7 +288,7 @@ def _axis_summary(element: ET.Element) -> str | None:
             vectors.append(value)
     if axis is None:
         return None
-    values = coefficients.split() if coefficients else []
+    values = coefficients.split() if coefficients is not None and len(coefficients) > 0 else []
     sample = (
         values
         if len(values) <= MAX_VERBOSE_AXIS_COORDINATES

@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from email.message import Message
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, override
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-class FakeResponse:
+class FakeResponse(pilot._HttpResponse):
     """Small context-managed HTTP response for deterministic tests."""
 
     def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
@@ -49,24 +49,28 @@ class FakeResponse:
             self.headers[key] = value
         self.status = 200
 
+    @override
     def __enter__(self) -> Self:
         """Return this response for a context-managed request."""
         return self
 
+    @override
     def read(self, amount: int = -1, /) -> bytes:
         """Return at most the requested number of response bytes."""
         return self.body if amount < 0 else self.body[:amount]
 
+    @override
     def __exit__(
         self,
-        _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: TracebackType | None,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
         """Close the fake response without side effects."""
+        del exc_type, exc_value, traceback
 
 
-class FakeEccodes:
+class FakeEccodes(pilot._Eccodes):
     """Return deterministic GRIB metadata and track handle release."""
 
     def __init__(self, metadata: dict[str, int | float | str]) -> None:
@@ -74,17 +78,22 @@ class FakeEccodes:
         self.metadata = metadata
         self.released = False
 
-    def codes_get(self, _handle: object, key: str) -> int | float | str:
+    @override
+    def codes_get(self, handle: object, key: str) -> int | float | str:
         """Return one deterministic metadata value."""
+        del handle
         return self.metadata[key]
 
-    @staticmethod
-    def codes_new_from_message(_message: bytes) -> object:
+    @override
+    def codes_new_from_message(self, message: bytes) -> object:
         """Create an opaque stand-in for an ecCodes handle."""
+        del message
         return object()
 
-    def codes_release(self, _handle: object) -> None:
+    @override
+    def codes_release(self, handle: object) -> None:
         """Record that the fake handle was released."""
+        del handle
         self.released = True
 
 
