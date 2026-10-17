@@ -90,6 +90,32 @@ def test_skips_detached_head(monkeypatch: pytest.MonkeyPatch) -> None:
     assert push_new_branch.main() == 0
 
 
+def test_reports_branch_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Propagate Git failures other than a detached HEAD result."""
+    monkeypatch.setattr(
+        push_new_branch,
+        "_git",
+        lambda *_arguments: _result(returncode=128, stderr="fatal: not a git repository"),
+    )
+
+    assert push_new_branch.main() == 128
+    assert "fatal: not a git repository" in caplog.text
+
+
+def test_propagates_missing_git_during_branch_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Do not mistake a missing Git executable for a detached HEAD."""
+    monkeypatch.setattr(push_new_branch, "_git", lambda *_arguments: _result(returncode=127))
+
+    assert push_new_branch.main() == 127
+    assert "Git exited with status 127" in caplog.text
+
+
 def test_skips_file_only_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     """Do not invoke Git for a pre-commit file-only checkout event."""
     fake_git = Mock(side_effect=AssertionError("Git should not be invoked"))

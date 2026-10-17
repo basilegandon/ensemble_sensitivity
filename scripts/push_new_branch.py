@@ -44,7 +44,13 @@ def main() -> int:
 
     branch_result = _git("symbolic-ref", "--quiet", "--short", "HEAD")
     if branch_result.returncode != 0:
-        return 0
+        if branch_result.returncode != 1:
+            LOGGER.error(
+                "Unable to determine the current branch: %s",
+                branch_result.stderr.strip()
+                or f"Git exited with status {branch_result.returncode}.",
+            )
+        return 0 if branch_result.returncode == 1 else branch_result.returncode
     branch = branch_result.stdout.strip()
 
     upstream_result = _git(
