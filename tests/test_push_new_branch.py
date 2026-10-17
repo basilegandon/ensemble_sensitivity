@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 from scripts import push_new_branch
 
@@ -112,3 +113,71 @@ def test_reports_missing_origin_without_trying_to_push(
     assert push_new_branch.main() == 2
     assert "remote 'origin' is not configured" in caplog.text
     assert calls[-1] == ("remote", "get-url", "origin")
+
+
+def test_reports_upstream_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stop with an actionable error when Git cannot inspect the upstream."""
+    results: Iterator[_GitResult] = iter([_result(stdout="feature\n"), _result(returncode=3)])
+    monkeypatch.setattr(push_new_branch, "_git", lambda *_arguments: next(results))
+
+    assert push_new_branch.main() == 3
+    assert "Unable to determine the upstream" in caplog.text
+
+
+def test_reports_push_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Propagate a remote push failure and include Git's diagnostic."""
+    results: Iterator[_GitResult] = iter(
+        [
+            _result(stdout="feature\n"),
+            _result(),
+            _result(stdout="https://example.invalid/repo.git\n"),
+            _result(returncode=1, stderr="permission denied"),
+        ]
+    )
+    monkeypatch.setattr(push_new_branch, "_git", lambda *_arguments: next(results))
+
+    assert push_new_branch.main() == 1
+    assert "permission denied" in caplog.text
+
+
+def test_git_command_uses_resolved_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invoke Git without a shell using the resolved executable path."""
+    fake_run = Mock(
+        return_value=push_new_branch.subprocess.CompletedProcess(
+            ["git", "status"],
+            0,
+            "clean",
+            "",
+        )
+    )
+    monkeypatch.setattr(push_new_branch, "GIT_EXECUTABLE", "git")
+    monkeypatch.setattr(push_new_branch.subprocess, "run", fake_run)
+
+    result = push_new_branch._git("status")
+
+    assert result.stdout == "clean"
+    fake_run.assert_called_once_with(
+        ["git", "status"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_git_command_reports_missing_executable(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Return a failing process result when Git cannot be found."""
+    monkeypatch.setattr(push_new_branch, "GIT_EXECUTABLE", None)
+
+    result = push_new_branch._git("status")
+
+    assert result.returncode == 127
+    assert "Git is not available on PATH" in caplog.text

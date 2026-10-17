@@ -87,6 +87,9 @@ preview = true
 "tests/test_pearp_api_probe.py" = [
     "private-member-access", # exercise small response-parsing helpers directly
 ]
+"tests/test_push_new_branch.py" = [
+    "private-member-access", # exercise the Git command wrapper directly
+]
 # This standalone probe uses the standard-library XML parser for the small,
 # authenticated Météo-France response and a fixed HTTPS API host.
 "docs/pearp_data/probe_pe_arpege_api.py" = [
@@ -167,7 +170,7 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["src", "docs"]
+source = ["src", "docs", "scripts"]
 
 [tool.coverage.report]
 exclude_also = [

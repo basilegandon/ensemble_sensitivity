@@ -713,6 +713,12 @@ def test_retrieval_revalidates_cached_fields_before_reuse(
     assert manifest["bytes_received"] == len(_valid_grib_message())
     assert field_path.read_bytes() == _valid_grib_message()
 
+    reused_dir = wcs_retrieval.retrieve_latest_complete_run(options)
+    manifest = json.loads((reused_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert len(requests) == 2
+    assert manifest["fields"][0]["reused"] is True
+    assert manifest["bytes_received"] == 0
+
 
 def test_visualization_requires_complete_run_manifest(tmp_path: Path) -> None:
     (tmp_path / "manifest.json").write_text(
