@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from ensemble_sensitivity.wcs_retrieval import (
+from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
     MAX_RESPONSE_BYTES,
     RetrievalError,
     _Eccodes,

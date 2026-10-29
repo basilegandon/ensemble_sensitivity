@@ -18,8 +18,8 @@ from urllib.request import Request
 
 import pytest
 
-from docs.pearp_data import pilot_pearp_wcs as pilot
-from docs.pearp_data.pilot_pearp_wcs import (
+from data_retrieval.exploration import pilot_pearp_wcs as pilot
+from data_retrieval.exploration.pilot_pearp_wcs import (
     FieldRequest,
     FieldResult,
     PilotError,
@@ -30,7 +30,7 @@ from docs.pearp_data.pilot_pearp_wcs import (
     required_leads,
     validate_metadata,
 )
-from docs.pearp_data.probe_pe_arpege_api import VARIABLE_NAME
+from data_retrieval.exploration.probe_pe_arpege_api import VARIABLE_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

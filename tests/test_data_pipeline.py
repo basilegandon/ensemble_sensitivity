@@ -22,8 +22,9 @@ import numpy as np
 import pytest
 from cartopy.mpl.geoaxes import GeoAxes
 
-from ensemble_sensitivity import visualization, wcs_retrieval
-from ensemble_sensitivity.wcs_retrieval import RetrievalError, RetrievalOptions
+from ensemble_sensitivity import visualization
+from ensemble_sensitivity.data_retrieval import wcs_retrieval
+from ensemble_sensitivity.data_retrieval.wcs_retrieval import RetrievalError, RetrievalOptions
 
 if TYPE_CHECKING:
     from pathlib import Path

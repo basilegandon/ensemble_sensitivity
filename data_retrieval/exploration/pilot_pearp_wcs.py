@@ -21,7 +21,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
-from docs.pearp_data.probe_pe_arpege_api import API_BASE_URL, VARIABLE_NAME, read_token
+from data_retrieval.exploration.probe_pe_arpege_api import (
+    API_BASE_URL,
+    VARIABLE_NAME,
+    read_token,
+)
 
 if TYPE_CHECKING:
     from email.message import Message
@@ -316,7 +320,8 @@ def _load_eccodes() -> _Eccodes:
     except ImportError as error:
         raise PilotError(
             "The WCS pilot requires ecCodes; run it with "
-            "`uv run --no-project --with eccodes python -m docs.pilot_pearp_wcs`."
+            "`uv run --no-project --with eccodes python -m "
+            "data_retrieval.exploration.pilot_pearp_wcs`."
         ) from error
 
     return cast("_Eccodes", module)

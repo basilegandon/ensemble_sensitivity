@@ -92,7 +92,7 @@ preview = true
 ]
 # This standalone probe uses the standard-library XML parser for the small,
 # authenticated Météo-France response and a fixed HTTPS API host.
-"docs/pearp_data/probe_pe_arpege_api.py" = [
+"data_retrieval/exploration/probe_pe_arpege_api.py" = [
     "implicit-namespace-package",
     "suspicious-url-open-usage",
     "suspicious-xml-etree-import",
@@ -100,7 +100,7 @@ preview = true
 ]
 # The pilot uses the same fixed HTTPS host and small XML capabilities document;
 # its explicit diagnostics and optional ecCodes binding are exploration-only.
-"docs/pearp_data/pilot_pearp_wcs.py" = [
+"data_retrieval/exploration/pilot_pearp_wcs.py" = [
     "error-instead-of-exception",
     "f-string-in-exception",
     "raw-string-in-exception",
@@ -111,7 +111,7 @@ preview = true
 ]
 # The retrieval path pins every request to the configured HTTPS host and uses
 # contextual errors for remote-data validation failures.
-"src/ensemble_sensitivity/wcs_retrieval.py" = [
+"src/ensemble_sensitivity/data_retrieval/wcs_retrieval.py" = [
     "error-instead-of-exception",
     "f-string-in-exception",
     "raw-string-in-exception",
@@ -170,7 +170,7 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["src", "docs", "scripts"]
+source = ["src", "data_retrieval", "scripts"]
 
 [tool.coverage.report]
 exclude_also = [
