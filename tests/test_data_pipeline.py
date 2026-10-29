@@ -7,7 +7,6 @@ from __future__ import annotations
 import importlib
 import io
 import json
-import time
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from itertools import pairwise
@@ -308,7 +307,7 @@ def test_get_capabilities_retries_at_service_directed_time(
         return response
 
     monkeypatch.setattr(wcs_retrieval, "_open_https", open_request)
-    monkeypatch.setattr(time, "sleep", waits.append)
+    monkeypatch.setattr(wcs_retrieval, "sleep", waits.append)
 
     assert wcs_retrieval._get_capabilities("secret-token") == b"<Capabilities />"
     assert len(responses) == 0
@@ -338,7 +337,7 @@ def test_get_capabilities_does_not_retry_429_without_server_retry_time(
 
     monkeypatch.setattr(wcs_retrieval, "_open_https", open_request)
     monkeypatch.setattr(
-        time,
+        wcs_retrieval,
         "sleep",
         lambda _delay: pytest.fail("must not sleep without a server retry time"),
     )
@@ -409,8 +408,8 @@ def test_wcs_requests_stay_below_rolling_minute_limit(
         request_starts.append(now)
         return FakeResponse(b"<Capabilities />")
 
-    monkeypatch.setattr(time, "monotonic", monotonic)
-    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(wcs_retrieval, "monotonic", monotonic)
+    monkeypatch.setattr(wcs_retrieval, "sleep", sleep)
     monkeypatch.setattr(wcs_retrieval, "_open_https", open_request)
 
     for _ in range(wcs_retrieval.MAX_REQUESTS_PER_MINUTE + 1):
@@ -455,7 +454,7 @@ def test_request_retries_transient_network_failures(
         return response
 
     monkeypatch.setattr(wcs_retrieval, "_open_https", open_request)
-    monkeypatch.setattr(time, "sleep", waits.append)
+    monkeypatch.setattr(wcs_retrieval, "sleep", waits.append)
     response = wcs_retrieval._open_with_retries(Request("https://example.invalid"), context="test")
     assert response.read() == b"ok"
     assert waits == [1.0]
@@ -474,7 +473,7 @@ def test_request_stops_after_network_retry_limit(
         "_open_https",
         lambda _request: (_ for _ in ()).throw(TimeoutError("network down")),
     )
-    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(wcs_retrieval, "sleep", lambda _delay: None)
     request = Request("https://example.invalid")
     with pytest.raises(RetrievalError, match="after 2 retries"):
         wcs_retrieval._open_with_retries(request, context="test")
@@ -502,7 +501,7 @@ def test_request_stops_after_throttle_retry_limit(
         lambda _context: None,
     )
     monkeypatch.setattr(wcs_retrieval, "_open_https", raise_throttle)
-    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(wcs_retrieval, "sleep", lambda _delay: None)
     request = Request("https://example.invalid")
     with pytest.raises(RetrievalError, match="after 5 throttle retries"):
         wcs_retrieval._open_with_retries(request, context="test")

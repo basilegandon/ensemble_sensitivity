@@ -18,6 +18,18 @@ repos:
         language: system
         pass_filenames: false
 
+      - id: vulture
+        name: Vulture unused-code check
+        entry: uv run --locked --no-sync --no-build vulture --config pyproject.toml
+        language: system
+        pass_filenames: false
+
+      - id: xenon
+        name: Xenon complexity check
+        entry: uv run --locked --no-sync --no-build xenon --max-absolute A --max-modules A --max-average A src scripts data_retrieval
+        language: system
+        pass_filenames: false
+
       - id: push-new-branches
         name: Push new branches to origin
         entry: uv run --locked --no-sync --no-build python scripts/push_new_branch.py

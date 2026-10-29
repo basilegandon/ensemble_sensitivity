@@ -9,12 +9,13 @@ import json
 import logging
 import os
 import re
-import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from itertools import product
 from operator import itemgetter
 from threading import Lock
+from time import monotonic, sleep
 from typing import TYPE_CHECKING, Protocol, Self, cast
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
@@ -67,14 +68,14 @@ class _HttpResponse(Protocol):
     def __enter__(self) -> Self:
         """Enter the response context."""
 
-    def read(self, amount: int = -1, /) -> bytes:
+    def read(self, _amount: int = -1, /) -> bytes:
         """Read response bytes."""
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
     ) -> None:
         """Close the response."""
 
@@ -140,6 +141,25 @@ class _CandidateRequest:
     step: int
 
 
+@dataclass(slots=True)
+class _CandidateRunState:
+    """Mutable files and records for one candidate retrieval."""
+
+    run_dir: Path
+    identity: dict[str, object]
+    records: list[FieldRecord]
+
+
+class _Progress(Protocol):
+    """Progress operations used while retrieving a candidate."""
+
+    def set_description(self, _desc: str | None = None, /) -> None:
+        """Set the progress description."""
+
+    def update(self, _n: int = 1, /) -> bool | None:
+        """Advance the progress bar."""
+
+
 def required_leads(target_lead_hours: int, step_hours: int) -> tuple[int, ...]:
     """Return target and preceding leads at the selected interval.
 
@@ -189,21 +209,58 @@ def read_token(env_file: Path) -> str:
 
     """
     token = os.environ.get(VARIABLE_NAME)
-    if token is not None and len(token) > 0:
+    if token is not None and token:
         return token
-    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line.removeprefix("export ").lstrip()
-        key, separator, value = line.partition("=")
-        if separator and key.strip() == VARIABLE_NAME:
-            token = value.strip().strip("\"'")
-            if token:
-                return token
-            break
+    token = _read_token_from_file(env_file)
+    if token is not None:
+        return token
     raise RetrievalError(f"{VARIABLE_NAME} is missing or empty in {env_file}")
+
+
+def _read_token_from_file(env_file: Path) -> str | None:
+    """Find a non-empty API token in a dotenv-style file.
+
+    Returns:
+        The first matching token, or None when no non-empty token is found.
+
+    """
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        token = _parse_token_line(raw_line)
+        if token is not None:
+            return token
+    return None
+
+
+def _parse_token_line(raw_line: str) -> str | None:
+    """Parse one dotenv-style line for the configured API token.
+
+    Returns:
+        The token value, or None when this line does not define a non-empty token.
+
+    """
+    line = raw_line.strip()
+    line = _normalize_token_line(line)
+    if line is None:
+        return None
+    key, separator, value = line.partition("=")
+    if not separator or key.strip() != VARIABLE_NAME:
+        return None
+    token = value.strip().strip("\"'")
+    return token or None
+
+
+def _normalize_token_line(line: str) -> str | None:
+    """Remove comments and an optional export prefix from a dotenv line.
+
+    Returns:
+        The normalized assignment, or None for a blank or comment line.
+
+    """
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("export "):
+        return line.removeprefix("export ").lstrip()
+    return line
 
 
 def _local_name(element: _XmlElement) -> str:
@@ -226,26 +283,65 @@ def coverage_candidates(capabilities: bytes) -> tuple[tuple[str, datetime], ...]
         RetrievalError: If the capabilities XML or a matching coverage ID is invalid.
 
     """
-    try:
-        root = cast("_XmlElement", ElementTree.fromstring(capabilities))
-    except ElementTree.ParseError as error:
-        raise RetrievalError("GetCapabilities returned malformed XML") from error
-
-    candidates: dict[str, datetime] = {}
-    for element in root.iter():
-        coverage_id = (element.text or "").strip()
-        if _local_name(element) != "CoverageId" or not coverage_id.startswith(COVERAGE_PREFIX):
-            continue
-        timestamp = coverage_id.removeprefix(COVERAGE_PREFIX)
-        try:
-            initialization = datetime.strptime(timestamp, "%Y-%m-%dT%H.%M.%SZ").replace(tzinfo=UTC)
-        except ValueError as error:
-            message = f"Invalid initialization timestamp in coverage ID {coverage_id!r}"
-            raise RetrievalError(message) from error
-        candidates[coverage_id] = initialization
+    root = _parse_capabilities(capabilities)
+    candidates = _parse_coverage_candidates(root)
     if not candidates:
         raise RetrievalError("No isobaric geopotential coverage was advertised")
     return tuple(sorted(candidates.items(), key=itemgetter(1), reverse=True))
+
+
+def _parse_capabilities(capabilities: bytes) -> _XmlElement:
+    """Parse a capabilities XML document.
+
+    Returns:
+        The parsed XML root element.
+
+    Raises:
+        RetrievalError: If the document is malformed.
+
+    """
+    try:
+        return cast("_XmlElement", ElementTree.fromstring(capabilities))
+    except ElementTree.ParseError as error:
+        raise RetrievalError("GetCapabilities returned malformed XML") from error
+
+
+def _parse_coverage_candidates(root: _XmlElement) -> dict[str, datetime]:
+    """Extract valid PEARP coverage IDs and initialization times.
+
+    Returns:
+        Coverage IDs mapped to their initialization time.
+
+    """
+    candidates: dict[str, datetime] = {}
+    for element in root.iter():
+        candidate = _parse_coverage_element(element)
+        if candidate is not None:
+            coverage_id, initialization = candidate
+            candidates[coverage_id] = initialization
+    return candidates
+
+
+def _parse_coverage_element(element: _XmlElement) -> tuple[str, datetime] | None:
+    """Parse a matching coverage element, if this element advertises one.
+
+    Returns:
+        Coverage ID and initialization, or None for a different element.
+
+    Raises:
+        RetrievalError: If a matching coverage has an invalid timestamp.
+
+    """
+    coverage_id = (element.text or "").strip()
+    if _local_name(element) != "CoverageId" or not coverage_id.startswith(COVERAGE_PREFIX):
+        return None
+    timestamp = coverage_id.removeprefix(COVERAGE_PREFIX)
+    try:
+        initialization = datetime.strptime(timestamp, "%Y-%m-%dT%H.%M.%SZ").replace(tzinfo=UTC)
+    except ValueError as error:
+        message = f"Invalid initialization timestamp in coverage ID {coverage_id!r}"
+        raise RetrievalError(message) from error
+    return coverage_id, initialization
 
 
 def _load_eccodes() -> _Eccodes:
@@ -284,6 +380,28 @@ def _validate_grib(
         RetrievalError: If the response framing or requested field metadata is invalid.
 
     """
+    _validate_grib_framing(body)
+    metadata = _read_grib_metadata(body, eccodes)
+    expected = _expected_grib_metadata(
+        member=member,
+        lead_hours=lead_hours,
+        initialization=initialization,
+    )
+    mismatches = _metadata_mismatches(metadata, expected)
+    if mismatches:
+        raise RetrievalError(
+            f"GRIB metadata mismatch for member {member}, lead {lead_hours}: {mismatches}"
+        )
+    return metadata
+
+
+def _validate_grib_framing(body: bytes) -> None:
+    """Ensure a response contains exactly one complete GRIB message.
+
+    Raises:
+        RetrievalError: If the message framing is invalid.
+
+    """
     if len(body) < GRIB_MIN_MESSAGE_BYTES or body[:4] != b"GRIB" or body[-4:] != b"7777":
         raise RetrievalError("WCS response is not one complete GRIB message")
     message_length = int.from_bytes(body[8:16], "big")
@@ -291,6 +409,18 @@ def _validate_grib(
         raise RetrievalError(
             f"WCS returned {len(body)} bytes but GRIB header declares {message_length}"
         )
+
+
+def _read_grib_metadata(
+    body: bytes,
+    eccodes: _Eccodes,
+) -> dict[str, int | float | str]:
+    """Read the identity and grid metadata from a GRIB message.
+
+    Returns:
+        Decoded GRIB metadata.
+
+    """
     handle = eccodes.codes_new_from_message(body)
     keys = (
         "paramId",
@@ -311,8 +441,22 @@ def _validate_grib(
         metadata = {key: eccodes.codes_get(handle, key) for key in keys}
     finally:
         eccodes.codes_release(handle)
+    return metadata
 
-    expected: dict[str, int | str] = {
+
+def _expected_grib_metadata(
+    *,
+    member: int,
+    lead_hours: int,
+    initialization: datetime,
+) -> dict[str, int | str]:
+    """Build the expected metadata for the requested Z500 member field.
+
+    Returns:
+        Expected field identity, ensemble, and grid metadata.
+
+    """
+    return {
         "paramId": 129,
         "typeOfLevel": "isobaricInhPa",
         "level": 500,
@@ -327,16 +471,21 @@ def _validate_grib(
         "Nj": 721,
         "units": "m**2 s**-2",
     }
-    mismatches = {
-        key: (metadata.get(key), value)
-        for key, value in expected.items()
-        if metadata.get(key) != value
+
+
+def _metadata_mismatches(
+    actual: dict[str, int | float | str],
+    expected: dict[str, int | str],
+) -> dict[str, tuple[int | float | str | None, int | str]]:
+    """Return expected metadata values that differ from the decoded message.
+
+    Returns:
+        Metadata keys mapped to their actual and expected values.
+
+    """
+    return {
+        key: (actual.get(key), value) for key, value in expected.items() if actual.get(key) != value
     }
-    if mismatches:
-        raise RetrievalError(
-            f"GRIB metadata mismatch for member {member}, lead {lead_hours}: {mismatches}"
-        )
-    return metadata
 
 
 def _get_capabilities(token: str) -> bytes:
@@ -398,21 +547,9 @@ def _wait_for_request_slot(context: str) -> None:
     """
     with _request_lock:
         while True:
-            now = time.monotonic()
-            cutoff = now - REQUEST_WINDOW_SECONDS
-            while _request_timestamps and _request_timestamps[0] <= cutoff:
-                _request_timestamps.popleft()
-            window_wait = (
-                _request_timestamps[0] + REQUEST_WINDOW_SECONDS - now
-                if len(_request_timestamps) >= MAX_REQUESTS_PER_MINUTE
-                else 0.0
-            )
-            interval_wait = (
-                _request_timestamps[-1] + MIN_REQUEST_INTERVAL_SECONDS - now
-                if _request_timestamps
-                else 0.0
-            )
-            delay = max(window_wait, interval_wait)
+            now = monotonic()
+            _discard_expired_request_timestamps(now)
+            delay = _request_slot_delay(now)
             if delay <= 0:
                 _request_timestamps.append(now)
                 return
@@ -423,7 +560,32 @@ def _wait_for_request_slot(context: str) -> None:
                 context,
                 MAX_REQUESTS_PER_MINUTE,
             )
-            time.sleep(delay)
+            sleep(delay)
+
+
+def _discard_expired_request_timestamps(now: float) -> None:
+    """Remove request timestamps older than the rolling quota window."""
+    cutoff = now - REQUEST_WINDOW_SECONDS
+    while _request_timestamps and _request_timestamps[0] <= cutoff:
+        _request_timestamps.popleft()
+
+
+def _request_slot_delay(now: float) -> float:
+    """Return the wait required by both the rolling quota and request spacing.
+
+    Returns:
+        Seconds to wait before starting another request.
+
+    """
+    window_wait = (
+        _request_timestamps[0] + REQUEST_WINDOW_SECONDS - now
+        if len(_request_timestamps) >= MAX_REQUESTS_PER_MINUTE
+        else 0.0
+    )
+    interval_wait = (
+        _request_timestamps[-1] + MIN_REQUEST_INTERVAL_SECONDS - now if _request_timestamps else 0.0
+    )
+    return max(window_wait, interval_wait)
 
 
 def _open_wcs_request(request: Request, *, context: str) -> _HttpResponse:
@@ -473,7 +635,7 @@ def _sleep_before_throttle_retry(
         MAX_THROTTLE_RETRIES,
         delay,
     )
-    time.sleep(delay)
+    sleep(delay)
 
 
 def _sleep_before_network_retry(
@@ -502,7 +664,7 @@ def _sleep_before_network_retry(
         context,
         delay,
     )
-    time.sleep(delay)
+    sleep(delay)
 
 
 def _open_with_retries(
@@ -548,8 +710,20 @@ def _request_field(
     Returns:
         Bounded GRIB response body.
 
-    Raises:
-        RetrievalError: If transport or response checks fail.
+    """
+    request = _coverage_request(token, coverage_id, member, lead_hours)
+    response = _open_with_retries(
+        request,
+        context=f"GetCoverage member {member:03d}, lead {lead_hours} h",
+    )
+    return _read_grib_response(response, member=member, lead_hours=lead_hours)
+
+
+def _coverage_request(token: str, coverage_id: str, member: int, lead_hours: int) -> Request:
+    """Build the authenticated GetCoverage request for one Z500 field.
+
+    Returns:
+        The HTTP request with the coverage query and API key.
 
     """
     endpoint = f"/wcs/MF-NWP-GLOBAL-PEARP{member:03}-025-GLOBE-WCS/GetCoverage"
@@ -565,33 +739,76 @@ def _request_field(
     )
     request = Request(
         f"{API_BASE_URL}{endpoint}?{parameters}",
-        headers={
-            "Accept": "application/wmo-grib",
-            "Cache-Control": "no-cache",
-        },
+        headers={"Accept": "application/wmo-grib", "Cache-Control": "no-cache"},
     )
     request.add_unredirected_header("apikey", token)
-    response = _open_with_retries(
-        request,
-        context=f"GetCoverage member {member:03d}, lead {lead_hours} h",
-    )
+    return request
+
+
+def _read_grib_response(
+    response: _HttpResponse,
+    *,
+    member: int,
+    lead_hours: int,
+) -> bytes:
+    """Read one bounded response and validate its declared size and content type.
+
+    Returns:
+        The validated GRIB message body.
+
+    """
     with response:
         content_type = response.headers.get("Content-Type", "unknown")
         content_length = response.headers.get("Content-Length")
-        if content_length is not None and len(content_length) > 0:
-            try:
-                declared_length = int(content_length)
-            except ValueError as error:
-                raise RetrievalError(
-                    f"Invalid Content-Length {content_length!r} for member {member:03}, "
-                    f"lead {lead_hours} h",
-                ) from error
-            if declared_length > MAX_RESPONSE_BYTES:
-                raise RetrievalError(
-                    f"Response Content-Length exceeds {MAX_RESPONSE_BYTES} bytes "
-                    f"for member {member:03}, lead {lead_hours} h"
-                )
         body = response.read(MAX_RESPONSE_BYTES + 1)
+    _validate_content_length(content_length, member=member, lead_hours=lead_hours)
+    _validate_grib_content(body, content_type, member=member, lead_hours=lead_hours)
+    return body
+
+
+def _validate_content_length(
+    content_length: str | None,
+    *,
+    member: int,
+    lead_hours: int,
+) -> None:
+    """Reject malformed or oversized declared response lengths.
+
+    Raises:
+        RetrievalError: If the declared length is invalid or too large.
+
+    """
+    if content_length is None:
+        return
+    if not content_length:
+        return
+    try:
+        declared_length = int(content_length)
+    except ValueError as error:
+        raise RetrievalError(
+            f"Invalid Content-Length {content_length!r} for member {member:03}, "
+            f"lead {lead_hours} h",
+        ) from error
+    if declared_length > MAX_RESPONSE_BYTES:
+        raise RetrievalError(
+            f"Response Content-Length exceeds {MAX_RESPONSE_BYTES} bytes "
+            f"for member {member:03}, lead {lead_hours} h"
+        )
+
+
+def _validate_grib_content(
+    body: bytes,
+    content_type: str,
+    *,
+    member: int,
+    lead_hours: int,
+) -> None:
+    """Reject oversized or non-GRIB content for a requested field.
+
+    Raises:
+        RetrievalError: If the body is too large or is not GRIB content.
+
+    """
     if len(body) > MAX_RESPONSE_BYTES:
         raise RetrievalError(
             f"Response exceeds {MAX_RESPONSE_BYTES} bytes for member {member:03}, "
@@ -601,7 +818,6 @@ def _request_field(
         raise RetrievalError(
             f"Expected GRIB but received {content_type} for member {member:03}, lead {lead_hours} h"
         )
-    return body
 
 
 def _candidate_dir(output_dir: Path, initialization: datetime, target: int, step: int) -> Path:
@@ -674,8 +890,23 @@ def _run_candidate(candidate: _CandidateRequest) -> Path:
     Returns:
         Directory containing the complete run fields and manifest.
 
-    Raises:
-        RetrievalError: If the request identity or a required field is invalid.
+    """
+    state = _prepare_candidate_run(candidate)
+    with tqdm(
+        total=len(candidate.leads) * len(MEMBERS),
+        desc=f"WCS {candidate.initialization:%Y-%m-%d %H} UTC",
+        unit="field",
+        dynamic_ncols=True,
+    ) as progress:
+        _process_candidate_fields(candidate, state, progress)
+    return _complete_candidate_run(state)
+
+
+def _prepare_candidate_run(candidate: _CandidateRequest) -> _CandidateRunState:
+    """Create or resume a candidate run and persist its initial manifest.
+
+    Returns:
+        Candidate state initialized with the request identity.
 
     """
     run_dir = _candidate_dir(
@@ -685,8 +916,7 @@ def _run_candidate(candidate: _CandidateRequest) -> Path:
         candidate.step,
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = run_dir / "manifest.json"
-    request_identity = {
+    identity: dict[str, object] = {
         "coverage_id": candidate.coverage_id,
         "initialization_utc": candidate.initialization.isoformat(),
         "target_lead_hours": candidate.target,
@@ -699,86 +929,146 @@ def _run_candidate(candidate: _CandidateRequest) -> Path:
         "units": "m**2 s**-2",
         "fields": [],
     }
-    if manifest_path.exists():
-        old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(old_manifest, dict):
-            raise RetrievalError(f"Existing manifest is not a JSON object: {manifest_path}")
-        for key in (
-            "coverage_id",
-            "target_lead_hours",
-            "time_step_hours",
-            "required_leads_hours",
-            "members",
-        ):
-            if old_manifest.get(key) != request_identity[key]:
-                raise RetrievalError(f"Existing manifest has different request identity: {key}")
+    _validate_resumed_candidate(run_dir, identity)
+    state = _CandidateRunState(run_dir, identity, [])
+    _write_manifest(run_dir, identity)
+    return state
 
-    records: list[FieldRecord] = []
-    _write_manifest(run_dir, request_identity)
-    total_fields = len(candidate.leads) * len(MEMBERS)
-    with tqdm(
-        total=total_fields,
-        desc=f"WCS {candidate.initialization:%Y-%m-%d %H} UTC",
-        unit="field",
-        dynamic_ncols=True,
-    ) as progress:
-        for lead in candidate.leads:
-            for member in MEMBERS:
-                progress.set_description(
-                    f"WCS {candidate.initialization:%Y-%m-%d %H} UTC "
-                    f"| Z500 | t+{lead}h | member {member:03}"
-                )
-                started = time.monotonic()
-                relative_path = f"member_{member:03}_lead_{lead:03}.grib"
-                field_path = run_dir / relative_path
-                try:
-                    body, metadata, reused = _obtain_field(
-                        candidate,
-                        member=member,
-                        lead=lead,
-                        field_path=field_path,
-                    )
-                except RetrievalError as error:
-                    request_identity["status"] = "failed"
-                    request_identity["failure"] = str(error)
-                    request_identity["fields"] = [asdict(item) for item in records]
-                    request_identity["elapsed_seconds"] = round(
-                        sum(record.elapsed_seconds for record in records), 3
-                    )
-                    request_identity["bytes_received"] = sum(
-                        record.bytes_received for record in records if not record.reused
-                    )
-                    _write_manifest(run_dir, request_identity)
-                    raise
-                record = FieldRecord(
-                    member=member,
-                    lead_hours=lead,
-                    relative_path=relative_path,
-                    bytes_received=len(body),
-                    elapsed_seconds=round(time.monotonic() - started, 3),
-                    reused=reused,
-                    grib_metadata=metadata,
-                )
-                records.append(record)
-                request_identity["fields"] = [asdict(item) for item in records]
-                _write_manifest(run_dir, request_identity)
-                progress.update()
-                logger.info(
-                    "Validated variable=Z500 lead=%03dh member=%03d bytes=%d reused=%s",
-                    lead,
-                    member,
-                    len(body),
-                    reused,
-                )
-    request_identity["status"] = "complete"
-    request_identity["elapsed_seconds"] = round(
-        sum(record.elapsed_seconds for record in records), 3
+
+def _validate_resumed_candidate(run_dir: Path, identity: dict[str, object]) -> None:
+    """Ensure an existing run directory belongs to the same retrieval request.
+
+    Raises:
+        RetrievalError: If the existing manifest is invalid or mismatched.
+
+    """
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.exists():
+        return
+    old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(old_manifest, dict):
+        raise RetrievalError(f"Existing manifest is not a JSON object: {manifest_path}")
+    keys = (
+        "coverage_id",
+        "target_lead_hours",
+        "time_step_hours",
+        "required_leads_hours",
+        "members",
     )
-    request_identity["bytes_received"] = sum(
-        record.bytes_received for record in records if not record.reused
+    for key in keys:
+        if old_manifest.get(key) != identity[key]:
+            raise RetrievalError(f"Existing manifest has different request identity: {key}")
+
+
+def _process_candidate_fields(
+    candidate: _CandidateRequest,
+    state: _CandidateRunState,
+    progress: _Progress,
+) -> None:
+    """Retrieve, validate, and record every requested field in one candidate.
+
+    Raises:
+        RetrievalError: If a required field fails retrieval or validation.
+
+    """
+    for lead, member in product(candidate.leads, MEMBERS):
+        progress.set_description(
+            f"WCS {candidate.initialization:%Y-%m-%d %H} UTC "
+            f"| Z500 | t+{lead}h | member {member:03}"
+        )
+        try:
+            record = _record_candidate_field(candidate, state, lead=lead, member=member)
+        except RetrievalError as error:
+            _mark_candidate_failed(state, error)
+            raise
+        progress.update()
+        logger.info(
+            "Validated variable=Z500 lead=%03dh member=%03d bytes=%d reused=%s",
+            lead,
+            member,
+            record.bytes_received,
+            record.reused,
+        )
+
+
+def _record_candidate_field(
+    candidate: _CandidateRequest,
+    state: _CandidateRunState,
+    *,
+    lead: int,
+    member: int,
+) -> FieldRecord:
+    """Obtain one field, add its record to run state, and persist the manifest.
+
+    Returns:
+        The field record after validation and persistence.
+
+    """
+    started = monotonic()
+    relative_path = f"member_{member:03}_lead_{lead:03}.grib"
+    body, metadata, reused = _obtain_field(
+        candidate,
+        member=member,
+        lead=lead,
+        field_path=state.run_dir / relative_path,
     )
-    _write_manifest(run_dir, request_identity)
-    return run_dir
+    record = FieldRecord(
+        member=member,
+        lead_hours=lead,
+        relative_path=relative_path,
+        bytes_received=len(body),
+        elapsed_seconds=round(monotonic() - started, 3),
+        reused=reused,
+        grib_metadata=metadata,
+    )
+    state.records.append(record)
+    state.identity["fields"] = [asdict(item) for item in state.records]
+    _write_manifest(state.run_dir, state.identity)
+    return record
+
+
+def _mark_candidate_failed(state: _CandidateRunState, error: RetrievalError) -> None:
+    """Persist failure status and completed-field metrics before propagating an error."""
+    state.identity["status"] = "failed"
+    state.identity["failure"] = str(error)
+    state.identity["fields"] = [asdict(item) for item in state.records]
+    state.identity["elapsed_seconds"] = _elapsed_seconds(state.records)
+    state.identity["bytes_received"] = _bytes_received(state.records)
+    _write_manifest(state.run_dir, state.identity)
+
+
+def _elapsed_seconds(records: list[FieldRecord]) -> float:
+    """Return rounded total field processing time.
+
+    Returns:
+        Sum of field processing times, rounded to milliseconds.
+
+    """
+    return round(sum(record.elapsed_seconds for record in records), 3)
+
+
+def _bytes_received(records: list[FieldRecord]) -> int:
+    """Return bytes fetched from the service, excluding reused cache entries.
+
+    Returns:
+        Total bytes for fields fetched during this run.
+
+    """
+    return sum(record.bytes_received for record in records if not record.reused)
+
+
+def _complete_candidate_run(state: _CandidateRunState) -> Path:
+    """Persist successful run status and aggregate metrics.
+
+    Returns:
+        The completed candidate directory.
+
+    """
+    state.identity["status"] = "complete"
+    state.identity["elapsed_seconds"] = _elapsed_seconds(state.records)
+    state.identity["bytes_received"] = _bytes_received(state.records)
+    _write_manifest(state.run_dir, state.identity)
+    return state.run_dir
 
 
 def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
@@ -793,30 +1083,101 @@ def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
     """
     leads = required_leads(options.target_lead_hours, options.step_hours)
     token = read_token(options.env_file)
+    candidates = _candidate_runs(options, token)
+    run_dir, failures = _try_candidate_runs(options, token, candidates, leads)
+    if run_dir is not None:
+        return run_dir
+    summary = _candidate_failure_summary(failures)
+    raise RetrievalError(f"No complete WCS run found for required leads {leads}: {summary}")
+
+
+def _candidate_runs(
+    options: RetrievalOptions,
+    token: str,
+) -> tuple[tuple[str, datetime], ...]:
+    """Fetch advertised candidate runs and apply an optional coverage filter.
+
+    Returns:
+        Advertised candidates, newest first, filtered to the requested ID.
+
+    Raises:
+        RetrievalError: If the requested coverage ID was not advertised.
+
+    """
     candidates = coverage_candidates(_get_capabilities(token))
-    if options.coverage_id is not None:
-        candidates = tuple(item for item in candidates if item[0] == options.coverage_id)
-        if not candidates:
-            raise RetrievalError(f"Requested coverage ID was not advertised: {options.coverage_id}")
+    if options.coverage_id is None:
+        return candidates
+    selected = tuple(item for item in candidates if item[0] == options.coverage_id)
+    if not selected:
+        raise RetrievalError(f"Requested coverage ID was not advertised: {options.coverage_id}")
+    return selected
+
+
+def _try_candidate_runs(
+    options: RetrievalOptions,
+    token: str,
+    candidates: tuple[tuple[str, datetime], ...],
+    leads: tuple[int, ...],
+) -> tuple[Path | None, list[str]]:
+    """Try candidates in order, recording expected retrieval failures.
+
+    Returns:
+        First complete run directory if one succeeds, plus candidate failures.
+
+    """
     eccodes = _load_eccodes()
     failures: list[str] = []
     for coverage_id, initialization in candidates:
         logger.info("Checking WCS run %s for leads %s", coverage_id, leads)
         try:
-            return _run_candidate(
-                _CandidateRequest(
-                    coverage_id=coverage_id,
-                    initialization=initialization,
-                    token=token,
-                    eccodes=eccodes,
-                    leads=leads,
-                    output_dir=options.output_dir,
-                    target=options.target_lead_hours,
-                    step=options.step_hours,
+            run_dir = _run_candidate(
+                _make_candidate_request(
+                    options,
+                    token,
+                    (coverage_id, initialization),
+                    leads,
+                    eccodes,
                 )
             )
         except RetrievalError as error:
             failures.append(f"{coverage_id}: {error}")
             logger.warning("Candidate run incomplete: %s", failures[-1])
-    summary = "; ".join(failures) if failures else "no candidate runs found"
-    raise RetrievalError(f"No complete WCS run found for required leads {leads}: {summary}")
+        else:
+            return run_dir, failures
+    return None, failures
+
+
+def _make_candidate_request(
+    options: RetrievalOptions,
+    token: str,
+    candidate: tuple[str, datetime],
+    leads: tuple[int, ...],
+    eccodes: _Eccodes,
+) -> _CandidateRequest:
+    """Combine retrieval options and advertised metadata into a candidate.
+
+    Returns:
+        Request details for one advertised candidate run.
+
+    """
+    coverage_id, initialization = candidate
+    return _CandidateRequest(
+        coverage_id=coverage_id,
+        initialization=initialization,
+        token=token,
+        eccodes=eccodes,
+        leads=leads,
+        output_dir=options.output_dir,
+        target=options.target_lead_hours,
+        step=options.step_hours,
+    )
+
+
+def _candidate_failure_summary(failures: list[str]) -> str:
+    """Format candidate failures, including the no-candidates case.
+
+    Returns:
+        A concise string suitable for the final retrieval error.
+
+    """
+    return "; ".join(failures) if failures else "no candidate runs found"

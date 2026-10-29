@@ -62,12 +62,11 @@ class FakeResponse(pilot._HttpResponse):
     @override
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
     ) -> None:
         """Close the fake response without side effects."""
-        del exc_type, exc_value, traceback
 
 
 class FakeEccodes(pilot._Eccodes):
@@ -297,7 +296,7 @@ def test_throttle_retry_waits_for_service_time(
 
     sleeps: list[float] = []
     monkeypatch.setattr(pilot, "urlopen", fake_urlopen)
-    monkeypatch.setattr(time, "sleep", sleeps.append)
+    monkeypatch.setattr(pilot, "sleep", sleeps.append)
     opened, retries, waited, network_retries = pilot._open_with_retries(
         Request("https://example.invalid"),
         7,
@@ -348,7 +347,7 @@ def test_network_retry_handles_transient_errors(
 
     sleeps: list[float] = []
     monkeypatch.setattr(pilot, "urlopen", fake_urlopen)
-    monkeypatch.setattr(time, "sleep", sleeps.append)
+    monkeypatch.setattr(pilot, "sleep", sleeps.append)
     opened, throttles, throttle_wait, retries = pilot._open_with_retries(
         Request("https://example.invalid"),
         0,
@@ -370,7 +369,7 @@ def test_network_retry_exhaustion_and_url_error_are_reported(
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("offline")),
     )
-    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(pilot, "sleep", lambda _delay: None)
     request = Request("https://example.invalid")
     with pytest.raises(PilotError, match="after 2 retries"):
         pilot._open_with_retries(request, 0, 24)

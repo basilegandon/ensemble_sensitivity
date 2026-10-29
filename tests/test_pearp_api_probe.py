@@ -46,12 +46,11 @@ class FakeResponse(probe._HttpResponse):
     @override
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
     ) -> None:
         """Close the fake response without side effects."""
-        del exc_type, exc_value, traceback
 
 
 def _http_error(code: int, body: bytes, headers: dict[str, str] | None = None) -> HTTPError:

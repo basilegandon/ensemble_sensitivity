@@ -32,6 +32,8 @@ dev = [
     "ty>=0.0.89",
     "types-defusedxml>=0.7.0.20250822",
     "types-tqdm>=4.67.0.20250809",
+    "vulture>=2.14",
+    "xenon>=0.9.3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -49,9 +51,11 @@ line-length = 100
 # Strictest linting: enable every Ruff rule, including preview rules.
 select = ["ALL"]
 
-# These two rules conflict with Ruff's formatter.
-# Ruff explicitly recommends disabling them when using `ruff format`.
+# Disable incompatible pydocstyle alternatives while retaining D211 and D212.
+# Ruff would otherwise choose these same alternatives implicitly and warn.
 ignore = [
+    "incorrect-blank-line-before-class",
+    "multi-line-summary-second-line",
     "missing-trailing-comma",
     "single-line-implicit-string-concatenation",
 ]
@@ -137,6 +141,12 @@ indent-style = "space"
 line-ending = "lf"
 skip-magic-trailing-comma = false
 docstring-code-format = true
+
+# Fail on likely-unused production code while avoiding dynamic test/plugin APIs.
+[tool.vulture]
+paths = ["src", "scripts", "data_retrieval"]
+min_confidence = 80
+ignore_names = ["GeoAxes"]
 
 # ---------------------------------------------------------------------------
 # ty

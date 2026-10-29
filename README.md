@@ -106,3 +106,16 @@ son état d’avancement sont décrits dans le [guide d’analyse](analysis/READ
 Pour contribuer, garder chaque README centré sur son répertoire. Documenter
 les choix scientifiques avec les données ou essais qui les justifient et
 accompagner les changements de calcul de tests synthétiques déterministes.
+
+Les contrôles qualité sont exécutés dans la CI et par les hooks
+`pre-commit`. Pour les lancer localement avec l’environnement verrouillé :
+
+```powershell
+uv run --locked --no-sync --no-build vulture --config pyproject.toml
+uv run --locked --no-sync --no-build xenon --max-absolute A --max-modules A --max-average A src scripts data_retrieval
+```
+
+Vulture signale le code probablement inutilisé avec un seuil de confiance de
+80 %. Xenon impose le grade A, son seuil le plus strict, aux blocs, aux
+modules et à la moyenne dans `src`, `scripts` et `data_retrieval`, y compris
+les sondes exploratoires.

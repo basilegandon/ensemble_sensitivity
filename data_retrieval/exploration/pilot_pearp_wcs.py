@@ -11,10 +11,11 @@ import logging
 import re
 import sys
 import tempfile
-import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from itertools import product
 from pathlib import Path
+from time import monotonic, sleep
 from typing import TYPE_CHECKING, Protocol, Self, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -58,14 +59,14 @@ class _HttpResponse(Protocol):
     def __enter__(self) -> Self:
         """Enter the response context."""
 
-    def read(self, amount: int = -1, /) -> bytes:
+    def read(self, _amount: int = -1, /) -> bytes:
         """Read response bytes."""
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
     ) -> None:
         """Close the response context."""
 
@@ -109,6 +110,15 @@ class FieldResult:
     grib_metadata: dict[str, int | float | str]
 
 
+@dataclass(slots=True)
+class _RetryState:
+    """Retry counts and waiting time accumulated for one HTTP request."""
+
+    throttle_retries: int = 0
+    throttle_wait_seconds: float = 0.0
+    network_retries: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class FieldRequest:
     """Identity and expected initialization for one field request."""
@@ -124,6 +134,28 @@ class RequestMetrics:
     """Timing and throttle history for one API request."""
 
     started: float
+    throttle_retries: int
+    throttle_wait_seconds: float
+    network_retries: int
+
+
+@dataclass(slots=True)
+class _PilotRun:
+    """Fields and retrieval state accumulated for one pilot run."""
+
+    coverage_id: str
+    initialization: datetime
+    leads: list[int]
+    started: float
+    results: list[FieldResult]
+    failure: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PilotTotals:
+    """Aggregated response metrics for a pilot report."""
+
+    bytes_received: int
     throttle_retries: int
     throttle_wait_seconds: float
     network_retries: int
@@ -172,24 +204,56 @@ def latest_coverage_id(capabilities: bytes) -> str:
 
     """
     root = ET.fromstring(capabilities)
-    coverage_ids = [
-        (element.text or "").strip()
-        for element in root.iter()
-        if _local_name(element) == "CoverageId"
-        and (element.text or "").strip().startswith(COVERAGE_PREFIX)
-    ]
+    coverage_ids = _advertised_coverage_ids(root)
     if not coverage_ids:
         raise PilotError("No isobaric geopotential coverage was advertised")
+    return max(coverage_ids, key=_coverage_initialization)
 
-    def initialization(coverage_id: str) -> datetime:
-        timestamp = coverage_id.removeprefix(COVERAGE_PREFIX)
-        try:
-            return datetime.strptime(timestamp, "%Y-%m-%dT%H.%M.%SZ").replace(tzinfo=UTC)
-        except ValueError as error:
-            message = f"Invalid initialization timestamp in {coverage_id!r}"
-            raise PilotError(message) from error
 
-    return max(coverage_ids, key=initialization)
+def _advertised_coverage_ids(root: ET.Element) -> list[str]:
+    """Return all advertised isobaric-geopotential coverage identifiers.
+
+    Returns:
+        Matching coverage IDs in document order.
+
+    """
+    coverage_ids: list[str] = []
+    for element in root.iter():
+        coverage_id = _isobaric_coverage_id(element)
+        if coverage_id is not None:
+            coverage_ids.append(coverage_id)
+    return coverage_ids
+
+
+def _isobaric_coverage_id(element: ET.Element) -> str | None:
+    """Return a matching coverage ID from one XML element, if present.
+
+    Returns:
+        Isobaric-geopotential coverage ID, or None for other elements.
+
+    """
+    if _local_name(element) != "CoverageId":
+        return None
+    coverage_id = (element.text or "").strip()
+    return coverage_id if coverage_id.startswith(COVERAGE_PREFIX) else None
+
+
+def _coverage_initialization(coverage_id: str) -> datetime:
+    """Parse the initialization timestamp encoded in a coverage identifier.
+
+    Returns:
+        UTC initialization time.
+
+    Raises:
+        PilotError: If the coverage identifier has an invalid timestamp.
+
+    """
+    timestamp = coverage_id.removeprefix(COVERAGE_PREFIX)
+    try:
+        return datetime.strptime(timestamp, "%Y-%m-%dT%H.%M.%SZ").replace(tzinfo=UTC)
+    except ValueError as error:
+        message = f"Invalid initialization timestamp in {coverage_id!r}"
+        raise PilotError(message) from error
 
 
 def next_access_time(error_body: str) -> datetime | None:
@@ -337,8 +401,20 @@ def _decode_single_message(body: bytes, eccodes: _Eccodes) -> dict[str, int | fl
     Returns:
         Validated-key values from the GRIB message.
 
+    """
+    _validate_grib_framing(body)
+    handle = eccodes.codes_new_from_message(body)
+    try:
+        return _decode_metadata(handle, eccodes)
+    finally:
+        eccodes.codes_release(handle)
+
+
+def _validate_grib_framing(body: bytes) -> None:
+    """Reject incomplete or concatenated GRIB messages.
+
     Raises:
-        PilotError: If the response is not exactly one complete GRIB message.
+        PilotError: If the response does not contain one complete message.
 
     """
     if len(body) < GRIB_MIN_MESSAGE_BYTES or body[:4] != b"GRIB" or body[-4:] != b"7777":
@@ -347,7 +423,15 @@ def _decode_single_message(body: bytes, eccodes: _Eccodes) -> dict[str, int | fl
     if message_length != len(body):
         message = f"WCS returned {len(body)} bytes but GRIB header declares {message_length}"
         raise PilotError(message)
-    handle = eccodes.codes_new_from_message(body)
+
+
+def _decode_metadata(handle: object, eccodes: _Eccodes) -> dict[str, int | float | str]:
+    """Read the identity and grid keys from one ecCodes handle.
+
+    Returns:
+        Decoded metadata values for the message.
+
+    """
     keys = (
         "paramId",
         "typeOfLevel",
@@ -363,10 +447,7 @@ def _decode_single_message(body: bytes, eccodes: _Eccodes) -> dict[str, int | fl
         "Nj",
         "units",
     )
-    try:
-        return {key: eccodes.codes_get(handle, key) for key in keys}
-    finally:
-        eccodes.codes_release(handle)
+    return {key: eccodes.codes_get(handle, key) for key in keys}
 
 
 def validate_metadata(
@@ -455,43 +536,59 @@ def _open_with_retries(
         Open response, number of quota retries, quota wait seconds, and network
         retries.
 
-    Raises:
-        PilotError: If the request fails after the retry limits.
-
     """
-    throttle_retries = 0
-    throttle_wait_seconds = 0.0
-    network_retries = 0
+    retries = _RetryState()
     while True:
         try:
             response = cast("_HttpResponse", urlopen(request, timeout=HTTP_TIMEOUT_SECONDS))
-        except HTTPError as error:
-            wait_seconds = _throttle_retry_delay(error, member, lead_hours, throttle_retries)
-            throttle_retries += 1
-            throttle_wait_seconds += wait_seconds
-            time.sleep(wait_seconds)
-        except TimeoutError as error:
-            network_retries, retry_delay = _network_retry_delay(
-                error,
-                member,
-                lead_hours,
-                network_retries,
-            )
-            time.sleep(retry_delay)
-        except URLError as error:
-            raise PilotError(
-                f"Network failure for member {member:03}, lead {lead_hours} h: {error.reason}"
-            ) from error
-        except OSError as error:
-            network_retries, retry_delay = _network_retry_delay(
-                error,
-                member,
-                lead_hours,
-                network_retries,
-            )
-            time.sleep(retry_delay)
+        except (HTTPError, URLError, TimeoutError, OSError) as error:
+            sleep(_retry_request_failure(error, member, lead_hours, retries))
         else:
-            return response, throttle_retries, throttle_wait_seconds, network_retries
+            return (
+                response,
+                retries.throttle_retries,
+                retries.throttle_wait_seconds,
+                retries.network_retries,
+            )
+
+
+def _retry_request_failure(
+    error: HTTPError | URLError | TimeoutError | OSError,
+    member: int,
+    lead_hours: int,
+    retries: _RetryState,
+) -> float:
+    """Update retry counters and return the delay for a failed HTTP request.
+
+    Returns:
+        Updated throttle and network counters, plus wait seconds.
+
+    Raises:
+        PilotError: If the failure is non-retryable or a retry limit is reached.
+
+    """
+    if isinstance(error, HTTPError):
+        wait_seconds = _throttle_retry_delay(
+            error,
+            member,
+            lead_hours,
+            retries.throttle_retries,
+        )
+        retries.throttle_retries += 1
+        retries.throttle_wait_seconds += wait_seconds
+        return wait_seconds
+    if isinstance(error, URLError):
+        raise PilotError(
+            f"Network failure for member {member:03}, lead {lead_hours} h: {error.reason}"
+        ) from error
+    network_retries, retry_delay = _network_retry_delay(
+        error,
+        member,
+        lead_hours,
+        retries.network_retries,
+    )
+    retries.network_retries = network_retries
+    return retry_delay
 
 
 def _validate_response(
@@ -511,31 +608,13 @@ def _validate_response(
     Returns:
         Validated response metrics and GRIB metadata.
 
-    Raises:
-        PilotError: If the response is oversized or not the requested GRIB field.
-
     """
     member = field_request.member
     lead_hours = field_request.lead_hours
     content_type = response.headers.get("Content-Type", "unknown")
     content_length = response.headers.get("Content-Length")
-    if (
-        content_length is not None
-        and len(content_length) > 0
-        and int(content_length) > MAX_RESPONSE_BYTES
-    ):
-        message = (
-            f"Response Content-Length {content_length} exceeds "
-            f"{MAX_RESPONSE_BYTES} bytes for member {member:03}, lead {lead_hours} h"
-        )
-        raise PilotError(message)
-    body = response.read(MAX_RESPONSE_BYTES + 1)
-    if len(body) > MAX_RESPONSE_BYTES:
-        message = f"Response exceeds {MAX_RESPONSE_BYTES} bytes for member {member:03}, "
-        raise PilotError(f"{message}lead {lead_hours} h")
-    if "xml" in content_type.casefold():
-        message = f"Expected GRIB but received {content_type} for member {member:03}, "
-        raise PilotError(f"{message}lead {lead_hours} h")
+    _validate_response_length(content_length, member, lead_hours)
+    body = _read_response_body(response, content_type, member, lead_hours)
     metadata = _decode_single_message(body, eccodes)
     validate_metadata(
         metadata,
@@ -549,12 +628,56 @@ def _validate_response(
         http_status=response.status,
         content_type=content_type,
         bytes_received=len(body),
-        elapsed_seconds=time.monotonic() - request_metrics.started,
+        elapsed_seconds=monotonic() - request_metrics.started,
         throttle_retries=request_metrics.throttle_retries,
         throttle_wait_seconds=request_metrics.throttle_wait_seconds,
         network_retries=request_metrics.network_retries,
         grib_metadata=metadata,
     )
+
+
+def _validate_response_length(
+    content_length: str | None,
+    member: int,
+    lead_hours: int,
+) -> None:
+    """Reject a response whose declared size exceeds the configured bound.
+
+    Raises:
+        PilotError: If the declared response size is too large.
+
+    """
+    if content_length is not None and content_length and int(content_length) > MAX_RESPONSE_BYTES:
+        message = (
+            f"Response Content-Length {content_length} exceeds "
+            f"{MAX_RESPONSE_BYTES} bytes for member {member:03}, lead {lead_hours} h"
+        )
+        raise PilotError(message)
+
+
+def _read_response_body(
+    response: _HttpResponse,
+    content_type: str,
+    member: int,
+    lead_hours: int,
+) -> bytes:
+    """Read a bounded response and reject XML service errors.
+
+    Returns:
+        Response bytes accepted for GRIB decoding.
+
+    Raises:
+        PilotError: If the body is oversized or has an XML content type.
+
+    """
+    body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        message = f"Response exceeds {MAX_RESPONSE_BYTES} bytes for member {member:03}, "
+        raise PilotError(f"{message}lead {lead_hours} h")
+    if "xml" in content_type.casefold():
+        message = f"Expected GRIB but received {content_type} for member {member:03}, "
+        raise PilotError(f"{message}lead {lead_hours} h")
+    return body
 
 
 def _request_field(
@@ -594,7 +717,7 @@ def _request_field(
             "Cache-Control": "no-cache",
         },
     )
-    started = time.monotonic()
+    started = monotonic()
     response, throttle_retries, throttle_wait_seconds, network_retries = _open_with_retries(
         request,
         member,
@@ -625,96 +748,181 @@ def run_pilot(options: PilotOptions) -> int:
         Zero when all requested fields pass validation, otherwise one.
 
     """
+    token, eccodes, state = _start_pilot(options)
+    _retrieve_pilot_fields(token, eccodes, state)
+    complete = len(state.results) == len(state.leads) * len(MEMBERS)
+    report = _build_pilot_report(options, state, complete=complete)
+    _write_pilot_report(options.report_path, report)
+    _log_pilot_report(state, options.report_path, complete=complete)
+    return 0 if complete else 1
+
+
+def _start_pilot(options: PilotOptions) -> tuple[str, _Eccodes, _PilotRun]:
+    """Resolve the latest run and initialize state before field retrieval.
+
+    Returns:
+        API token, ecCodes binding, and initialized run state.
+
+    """
     leads = required_leads(options.target_lead_hours, options.step_hours)
     token = read_token(options.env_path)
     logger.info("Environment file: %s", options.env_path.resolve())
     logger.info("Credential variable: %s (present)", VARIABLE_NAME)
-    capabilities = _get_capabilities(token)
-    coverage_id = latest_coverage_id(capabilities)
-    initialization = datetime.strptime(
-        coverage_id.removeprefix(COVERAGE_PREFIX),
-        "%Y-%m-%dT%H.%M.%SZ",
-    ).replace(tzinfo=UTC)
+    coverage_id = latest_coverage_id(_get_capabilities(token))
+    initialization = _coverage_initialization(coverage_id)
     eccodes = _load_eccodes()
-    results: list[FieldResult] = []
-    started = time.monotonic()
-    failure: str | None = None
-    for lead in leads:
-        for member in MEMBERS:
-            try:
-                result = _request_field(
-                    token,
-                    FieldRequest(
-                        coverage_id=coverage_id,
-                        member=member,
-                        lead_hours=lead,
-                        initialization=initialization,
-                    ),
-                    eccodes,
-                )
-            except PilotError as error:
-                failure = str(error)
-                logger.error("Pilot stopped: %s", failure)
-                break
-            results.append(result)
-            logger.info(
-                "member=%03d lead=%03dh status=%d bytes=%d elapsed=%.2fs",
-                result.member,
-                result.lead_hours,
-                result.http_status,
-                result.bytes_received,
-                result.elapsed_seconds,
-            )
-        if failure is not None:
-            break
+    state = _PilotRun(
+        coverage_id=coverage_id,
+        initialization=initialization,
+        leads=leads,
+        started=monotonic(),
+        results=[],
+    )
+    return token, eccodes, state
 
-    complete = len(results) == len(leads) * len(MEMBERS)
-    report = {
-        "coverage_id": coverage_id,
-        "initialization_utc": initialization.isoformat(),
+
+def _retrieve_pilot_fields(
+    token: str,
+    eccodes: _Eccodes,
+    state: _PilotRun,
+) -> None:
+    """Retrieve required fields in order, stopping after the first failure."""
+    for lead, member in product(state.leads, MEMBERS):
+        try:
+            result = _request_field(
+                token,
+                FieldRequest(
+                    coverage_id=state.coverage_id,
+                    member=member,
+                    lead_hours=lead,
+                    initialization=state.initialization,
+                ),
+                eccodes,
+            )
+        except PilotError as error:
+            state.failure = str(error)
+            logger.error("Pilot stopped: %s", state.failure)
+            return
+        state.results.append(result)
+        logger.info(
+            "member=%03d lead=%03dh status=%d bytes=%d elapsed=%.2fs",
+            result.member,
+            result.lead_hours,
+            result.http_status,
+            result.bytes_received,
+            result.elapsed_seconds,
+        )
+
+
+def _build_pilot_report(
+    options: PilotOptions,
+    state: _PilotRun,
+    *,
+    complete: bool,
+) -> dict[str, object]:
+    """Build the JSON measurement report from one pilot's results.
+
+    Returns:
+        Report fields ready for JSON serialization.
+
+    """
+    results = state.results
+    totals = _pilot_result_totals(results)
+    return {
+        "coverage_id": state.coverage_id,
+        "initialization_utc": state.initialization.isoformat(),
         "target_lead_hours": options.target_lead_hours,
         "time_step_hours": options.step_hours,
-        "required_leads_hours": leads,
+        "required_leads_hours": state.leads,
         "members": len(MEMBERS),
-        "requests_expected": len(leads) * len(MEMBERS),
+        "requests_expected": len(state.leads) * len(MEMBERS),
         "requests_completed": len(results),
         "complete": complete,
-        "failure": failure,
-        "bytes_received": sum(result.bytes_received for result in results),
-        "throttle_retries": sum(result.throttle_retries for result in results),
-        "throttle_wait_seconds": round(
-            sum(result.throttle_wait_seconds for result in results),
-            3,
-        ),
-        "network_retries": sum(result.network_retries for result in results),
-        "elapsed_seconds": round(time.monotonic() - started, 3),
-        "mean_request_seconds": (
-            round(sum(result.elapsed_seconds for result in results) / len(results), 3)
-            if results
-            else None
-        ),
-        "mean_response_bytes": (
-            round(sum(result.bytes_received for result in results) / len(results))
-            if results
-            else None
-        ),
+        "failure": state.failure,
+        "bytes_received": totals.bytes_received,
+        "throttle_retries": totals.throttle_retries,
+        "throttle_wait_seconds": round(totals.throttle_wait_seconds, 3),
+        "network_retries": totals.network_retries,
+        "elapsed_seconds": round(monotonic() - state.started, 3),
+        "mean_request_seconds": _mean_request_seconds(results),
+        "mean_response_bytes": _mean_response_bytes(results),
         "results": [asdict(result) for result in results],
     }
-    options.report_path.parent.mkdir(parents=True, exist_ok=True)
-    options.report_path.write_text(
+
+
+def _pilot_result_totals(results: list[FieldResult]) -> _PilotTotals:
+    """Aggregate transfer and retry metrics without repeated traversals.
+
+    Returns:
+        Totals for bytes, retries, and accumulated throttle wait.
+
+    """
+    bytes_received = 0
+    throttle_retries = 0
+    throttle_wait_seconds = 0.0
+    network_retries = 0
+    for result in results:
+        bytes_received += result.bytes_received
+        throttle_retries += result.throttle_retries
+        throttle_wait_seconds += result.throttle_wait_seconds
+        network_retries += result.network_retries
+    return _PilotTotals(
+        bytes_received=bytes_received,
+        throttle_retries=throttle_retries,
+        throttle_wait_seconds=throttle_wait_seconds,
+        network_retries=network_retries,
+    )
+
+
+def _mean_request_seconds(results: list[FieldResult]) -> float | None:
+    """Return the mean request duration rounded to milliseconds.
+
+    Returns:
+        Mean duration, or None when no request completed.
+
+    """
+    if not results:
+        return None
+    return round(sum(result.elapsed_seconds for result in results) / len(results), 3)
+
+
+def _mean_response_bytes(results: list[FieldResult]) -> int | None:
+    """Return the mean response size rounded to the nearest byte.
+
+    Returns:
+        Mean response size, or None when no request completed.
+
+    """
+    if not results:
+        return None
+    return round(sum(result.bytes_received for result in results) / len(results))
+
+
+def _write_pilot_report(report_path: Path, report: dict[str, object]) -> None:
+    """Create the report directory and persist its JSON measurement."""
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _log_pilot_report(
+    state: _PilotRun,
+    report_path: Path,
+    *,
+    complete: bool,
+) -> None:
+    """Log the final request totals and persisted report location."""
     logger.info(
         "Pilot %s: %d/%d requests; %d bytes; %.1f seconds; report=%s",
         "complete" if complete else "incomplete",
-        len(results),
-        len(leads) * len(MEMBERS),
-        report["bytes_received"],
-        report["elapsed_seconds"],
-        options.report_path.resolve(),
+        len(state.results),
+        len(state.leads) * len(MEMBERS),
+        _pilot_result_totals(state.results).bytes_received,
+        round(monotonic() - state.started, 3),
+        report_path.resolve(),
     )
-    return 0 if complete else 1
 
 
 def main() -> int:
