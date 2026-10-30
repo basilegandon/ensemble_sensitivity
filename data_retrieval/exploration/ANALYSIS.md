@@ -6,7 +6,8 @@ production ingestion contract. Credentials are read from the ignored root
 
 ## Météo-France WCS API
 
-The local Swagger is `docs/Modèle_ARPEGE_Prévision_d'Ensemble_swagger.json`.
+The local Swagger is
+`data_retrieval/exploration/Modèle_ARPEGE_Prévision_d'Ensemble_swagger.json`.
 It defines the base URL `https://public-api.meteofrance.fr/public/pearpege/1.0`,
 global GLOB025 member routes `MF-NWP-GLOBAL-PEARP{member}-025-GLOBE-WCS`,
 EUROPE 0.1-degree routes, and WCS `GetCapabilities`, `DescribeCoverage`, and
@@ -78,7 +79,7 @@ An attempted multi-time subset `time(0,86400)` returned HTTP 404
 `InvalidSubsetting`; the service therefore required one `GetCoverage` per
 member and lead in this test.
 
-`docs/pearp_data/pilot_pearp_wcs.py` then queried the 35 API member endpoints sequentially
+`data_retrieval/exploration/pilot_pearp_wcs.py` then queried the 35 API member endpoints sequentially
 for each of +24 h and +0 h. All 70 requests returned HTTP 200; each response
 decoded to exactly one full-globe Z500 message and passed checks for
 initialization, lead, member ID, parameter 129, isobaric level 500, ensemble
@@ -172,7 +173,7 @@ Re-run the pilot (requires the optional ecCodes binding; no project runtime
 dependency was added by the original probe):
 
 ```powershell
-uv run --no-project --with eccodes python -m docs.pilot_pearp_wcs --target-lead-hours 24 --step-hours 24
+uv run --no-project --with eccodes python -m data_retrieval.exploration.pilot_pearp_wcs --target-lead-hours 24 --step-hours 24
 ```
 
 The pilot downloads each response into memory only, validates it, then discards
@@ -211,14 +212,20 @@ the first time these maps are rendered.
 Reusable probe:
 
 ```powershell
-python docs\pearp_data\probe_pe_arpege_api.py
-python docs\pearp_data\probe_pe_arpege_api.py --title-filter "Geopotential height"
-python docs\pearp_data\probe_pe_arpege_api.py --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z"
-python docs\pearp_data\probe_pe_arpege_api.py --member 034
-python docs\pearp_data\probe_pe_arpege_api.py --get-coverage --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z" --subset "pressure(500)" --subset "time(86400)" --subset "long(0,1)" --subset "lat(45,46)" --output "$env:TEMP\pearp-api-z500-sample.grib"
+python data_retrieval\exploration\probe_pe_arpege_api.py
+python data_retrieval\exploration\probe_pe_arpege_api.py --title-filter "Geopotential height"
+python data_retrieval\exploration\probe_pe_arpege_api.py --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z"
+python data_retrieval\exploration\probe_pe_arpege_api.py --member 034
+python data_retrieval\exploration\probe_pe_arpege_api.py --get-coverage --coverage-id "GEOPOTENTIAL__ISOBARIC_SURFACE___2026-10-03T06.00.00Z" --subset "pressure(500)" --subset "time(86400)" --subset "long(0,1)" --subset "lat(45,46)" --output "$env:TEMP\pearp-api-z500-sample.grib"
 ```
 
 ## data.gouv.fr GRIB2 resource set
+
+The WCS pilot established that a complete retrieval works for the tested
+run, but its source comparison did not measure the equivalent GRIB indexing
+and transfer cost. The current project criterion is to minimize time and bytes
+for the same required Z500 members and leads. A comparable measurement remains
+open; the pilot's historical WCS choice is not a result of that comparison.
 
 On 3 October, the dataset API returned 103 resources for run `202610030600`,
 named from `00:00` through `102:00` at one-hour intervals. The live catalog had

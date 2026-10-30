@@ -7,12 +7,12 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ensemble_sensitivity.visualization import render_quicklooks
-from ensemble_sensitivity.wcs_retrieval import (
+from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
     RetrievalError,
     RetrievalOptions,
     retrieve_latest_complete_run,
 )
+from ensemble_sensitivity.visualization import render_quicklooks
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

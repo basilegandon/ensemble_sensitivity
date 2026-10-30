@@ -86,6 +86,12 @@ jobs:
       - name: Type check
         run: uv run --locked --no-sync --no-build ty check .
 
+      - name: Unused code check
+        run: uv run --locked --no-sync --no-build vulture --config pyproject.toml
+
+      - name: Complexity check
+        run: uv run --locked --no-sync --no-build xenon --max-absolute A --max-modules A --max-average A src scripts data_retrieval
+
       - name: Security check
         run: uv run --locked --no-sync --no-build bandit -r src
 

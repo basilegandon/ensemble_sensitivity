@@ -19,6 +19,8 @@ Use the repository's locked environment and run the smallest applicable checks. 
 uv run --locked --no-sync --no-build ruff format --check .
 uv run --locked --no-sync --no-build ruff check .
 uv run --locked --no-sync --no-build ty check .
+uv run --locked --no-sync --no-build vulture --config pyproject.toml
+uv run --locked --no-sync --no-build xenon --max-absolute A --max-modules A --max-average A src scripts data_retrieval
 uv run --locked --no-sync --no-build bandit -r src
 uv run --locked --no-sync --no-build pytest
 ```

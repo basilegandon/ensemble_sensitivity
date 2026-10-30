@@ -42,17 +42,44 @@ def main() -> int:
     if os.environ.get("PRE_COMMIT_CHECKOUT_TYPE") == "0":
         return 0
 
-    branch_result = _git("symbolic-ref", "--quiet", "--short", "HEAD")
-    if branch_result.returncode != 0:
-        if branch_result.returncode != 1:
-            LOGGER.error(
-                "Unable to determine the current branch: %s",
-                branch_result.stderr.strip()
-                or f"Git exited with status {branch_result.returncode}.",
-            )
-        return 0 if branch_result.returncode == 1 else branch_result.returncode
-    branch = branch_result.stdout.strip()
+    branch, status = _current_branch()
+    if branch is None:
+        return status
 
+    has_upstream, status = _branch_upstream_status(branch)
+    if status != 0:
+        return status
+    if has_upstream:
+        return 0
+
+    return _push_to_origin(branch)
+
+
+def _current_branch() -> tuple[str | None, int]:
+    """Return the checked-out branch, or a status when it cannot be resolved.
+
+    Returns:
+        Branch name and status code; None indicates no symbolic branch.
+
+    """
+    branch_result = _git("symbolic-ref", "--quiet", "--short", "HEAD")
+    if branch_result.returncode == 0:
+        return branch_result.stdout.strip(), 0
+    if branch_result.returncode != 1:
+        LOGGER.error(
+            "Unable to determine the current branch: %s",
+            branch_result.stderr.strip() or f"Git exited with status {branch_result.returncode}.",
+        )
+    return None, 0 if branch_result.returncode == 1 else branch_result.returncode
+
+
+def _branch_upstream_status(branch: str) -> tuple[bool, int]:
+    """Check whether a local branch already has a configured upstream.
+
+    Returns:
+        Whether an upstream exists and the Git status code.
+
+    """
     upstream_result = _git(
         "for-each-ref",
         "--format=%(upstream)",
@@ -60,10 +87,19 @@ def main() -> int:
     )
     if upstream_result.returncode != 0:
         LOGGER.error("Unable to determine the upstream for branch %s.", branch)
-        return upstream_result.returncode
+        return False, upstream_result.returncode
     if upstream_result.stdout.strip():
-        return 0
+        return True, 0
+    return False, 0
 
+
+def _push_to_origin(branch: str) -> int:
+    """Push a branch to origin and set its upstream when successful.
+
+    Returns:
+        The Git exit status.
+
+    """
     remote_result = _git("remote", "get-url", "origin")
     if remote_result.returncode != 0:
         LOGGER.error("Cannot push branch %s: remote 'origin' is not configured.", branch)

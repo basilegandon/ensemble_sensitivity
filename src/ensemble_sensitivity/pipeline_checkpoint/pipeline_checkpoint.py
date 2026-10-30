@@ -113,16 +113,16 @@ class CheckpointMode:
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
+        _exc_type: type[BaseException] | None,
         exc: BaseException | None,
-        tb: TracebackType | None,
+        _tb: TracebackType | None,
     ) -> None:
         """Restore the previous checkpoint context.
 
         Args:
-            exc_type: The exception type, if any.
+            _exc_type: The exception type, if any.
             exc: The exception instance, if any.
-            tb: The traceback, if any.
+            _tb: The traceback, if any.
 
         """
         if self._token is None:
@@ -284,14 +284,43 @@ def _iter_output_frames(
 
     """
     if result is None:
-        # 0 sortie -> état muté en place : on relit chaque argument, dont
-        # l'état reflète maintenant la sortie de l'appel qui vient de finir.
-        for parameter_name, value in bound.items():
-            frame = _as_frame(value)
-            if frame is not None:
-                yield f"out.{parameter_name}", frame
+        yield from _iter_mutated_output_frames(bound)
         return
 
+    yield from _iter_returned_output_frames(result)
+
+
+def _iter_mutated_output_frames(
+    bound: dict[str, object],
+) -> Iterator[tuple[str, pl.DataFrame | pl.LazyFrame]]:
+    """Yield frames from arguments mutated in place by the decorated function.
+
+    Args:
+        bound: Bound function arguments after the decorated call.
+
+    Yields:
+        tuple[str, pl.DataFrame | pl.LazyFrame]: Output suffix and frame.
+
+    """
+    # 0 sortie -> état muté en place : les arguments reflètent la sortie.
+    for parameter_name, value in bound.items():
+        frame = _as_frame(value)
+        if frame is not None:
+            yield f"out.{parameter_name}", frame
+
+
+def _iter_returned_output_frames(
+    result: object,
+) -> Iterator[tuple[str, pl.DataFrame | pl.LazyFrame]]:
+    """Yield Polars frames contained in a function's returned value.
+
+    Args:
+        result: Value returned by the decorated function.
+
+    Yields:
+        tuple[str, pl.DataFrame | pl.LazyFrame]: Output suffix and frame.
+
+    """
     outputs = tuple(result) if isinstance(result, (tuple, list)) else (result,)
     multiple = len(outputs) > 1
     for index, value in enumerate(outputs):
