@@ -7,6 +7,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tqdm.contrib.logging import logging_redirect_tqdm
+
 from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
     RAW_FETCH_DIRNAME,
     RetrievalError,
@@ -149,13 +151,21 @@ def configure_logging(*, verbose: bool = False, quiet: bool = False) -> None:
 def main(args: Sequence[str] | None = None) -> None:
     """Run the application or a PEARP data pipeline stage.
 
+    Log records are routed through tqdm so they print above the progress bar.
+    """
+    parsed_args = parse_args(args)
+    configure_logging(verbose=parsed_args.verbose, quiet=parsed_args.quiet)
+    with logging_redirect_tqdm():
+        _dispatch(parsed_args)
+
+
+def _dispatch(parsed_args: argparse.Namespace) -> None:
+    """Run the selected command.
+
     Raises:
         SystemExit: If a requested retrieval or visualization stage fails.
 
     """
-    parsed_args = parse_args(args)
-    configure_logging(verbose=parsed_args.verbose, quiet=parsed_args.quiet)
-
     if parsed_args.command == "fetch":
         try:
             run_dir = retrieve_latest_complete_run(

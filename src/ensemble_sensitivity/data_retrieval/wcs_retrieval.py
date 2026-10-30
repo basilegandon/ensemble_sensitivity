@@ -897,6 +897,7 @@ def _fetch_candidate_fields(candidate: _CandidateRequest, staging_dir: Path) -> 
         desc=label,
         unit="field",
         dynamic_ncols=True,
+        leave=False,
         disable=not candidate.show_progress,
     ) as progress:
         for lead, member in product(candidate.leads, MEMBERS):
