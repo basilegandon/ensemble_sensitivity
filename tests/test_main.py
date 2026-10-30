@@ -113,14 +113,58 @@ def test_main_fetch_dispatches_retrieval_and_logs_result(
     monkeypatch.setattr(main_module, "retrieve_latest_complete_run", retrieve)
 
     with caplog.at_level(logging.INFO):
-        main(["fetch", "--target-lead-hours", "48", "--step-hours", "12"])
+        main(["fetch", "--lead-time", "48", "--step", "12"])
 
     options = retrieve.call_args.args[0]
     assert options.target_lead_hours == 48
     assert options.step_hours == 12
-    assert options.output_dir == Path("data") / "pearp"
+    assert options.output_dir == Path("output")
     assert options.env_file == Path(".env")
-    assert "Complete PEARP run saved to" in caplog.text
+    assert options.show_progress is True
+    assert "Raw GRIB fields saved to" in caplog.text
+    assert "raw_fetch" in caplog.text
+
+
+def test_fetch_needs_no_argument_and_accepts_short_options() -> None:
+    defaults = parse_args(["fetch"])
+    assert (defaults.lead_time, defaults.step) == (24, 24)
+    assert (defaults.verbose, defaults.quiet) == (False, False)
+
+    short = parse_args(["fetch", "-l", "72", "-s", "6", "-q"])
+    assert (short.lead_time, short.step, short.quiet) == (72, 6, True)
+
+
+def test_verbosity_flags_work_before_and_after_the_subcommand() -> None:
+    assert parse_args(["-v", "fetch"]).verbose is True
+    assert parse_args(["fetch", "-v"]).verbose is True
+    assert parse_args(["fetch", "--quiet"]).quiet is True
+    with pytest.raises(SystemExit):
+        parse_args(["fetch", "-v", "-q"])
+
+
+def test_quiet_fetch_hides_progress_and_info_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    retrieve = Mock(return_value=Path("retrieved-run"))
+    monkeypatch.setattr(main_module, "retrieve_latest_complete_run", retrieve)
+
+    with caplog.at_level(logging.WARNING):
+        main(["fetch", "-q"])
+
+    assert retrieve.call_args.args[0].show_progress is False
+    assert logging.getLogger().level == logging.WARNING
+    assert not caplog.text
+
+
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected"),
+    [(False, False, logging.INFO), (True, False, logging.DEBUG), (False, True, logging.WARNING)],
+)
+def test_configure_logging_levels(*, verbose: bool, quiet: bool, expected: int) -> None:
+    configure_logging(verbose=verbose, quiet=quiet)
+
+    assert logging.getLogger().level == expected
 
 
 def test_main_fetch_reports_retrieval_errors(

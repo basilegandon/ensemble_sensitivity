@@ -22,7 +22,7 @@ flowchart TB
         echeances --> reste
         reste -->|oui| champs["Pour ce candidat, traiter chaque échéance<br/>et les membres 0 à 34"]
         reste -->|non| echec_fetch((Aucun run complet : RetrievalError))
-        champs --> obtenir["Réutiliser un champ en cache valide ou le demander au WCS"]
+        champs --> obtenir["Demander chaque champ au WCS"]
         obtenir --> valider["Valider chaque message GRIB : run, échéance, membre, Z500, niveau, unités et grille"]
         valider --> enregistrer["Enregistrer le champ et<br/>mettre à jour le manifeste"]
         enregistrer --> complet{"Tous les champs requis<br/>sont-ils valides ?"}
@@ -61,9 +61,10 @@ flowchart TB
     run_complet -. étape distincte, non implémentée .-> note
 ```
 
-La commande `fetch` récupère les champs demandés et ne renvoie qu’un run pour
-lequel tous les champs requis ont été validés. Elle réutilise les champs en
-cache lorsqu’ils sont valides et conserve l’état du run dans son manifeste.
+La commande `fetch` récupère les champs demandés dans un dossier d’exécution
+`output/run_<date>_lead_time_<échéance>_step_<pas>/raw_fetch` et ne renvoie un
+run que si tous les champs requis ont été validés ; sinon rien n’est conservé
+et il n’y a pas de reprise. Elle conserve la provenance dans son manifeste.
 La commande `plot` lit ce manifeste et les champs sélectionnés pour produire
 des cartes de contrôle individuelles ; elle ne calcule pas de carte de
 sensibilité. En cas d’erreur pendant `fetch` ou `plot`, `main()` la journalise
