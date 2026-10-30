@@ -130,7 +130,10 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
         help="directory for batch maps (default: <run-dir>\\maps)",
     )
     plot_parser.add_argument("--output", type=Path)
-    return parser.parse_args(args)
+    namespace = parser.parse_args(args)
+    if namespace.verbose and namespace.quiet:
+        parser.error("argument -q/--quiet: not allowed with argument -v/--verbose")
+    return namespace
 
 
 def configure_logging(*, verbose: bool = False, quiet: bool = False) -> None:
@@ -138,10 +141,10 @@ def configure_logging(*, verbose: bool = False, quiet: bool = False) -> None:
 
     Args:
         verbose: Whether to enable DEBUG-level logging.
-        quiet: Whether to log only warnings and errors.
+        quiet: Whether to log only errors.
 
     """
-    level = logging.DEBUG if verbose else logging.WARNING if quiet else logging.INFO
+    level = logging.DEBUG if verbose else logging.ERROR if quiet else logging.INFO
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     if not root_logger.handlers:
@@ -196,6 +199,7 @@ def _dispatch(parsed_args: argparse.Namespace) -> None:
                 members=parsed_args.members,
                 output_dir=parsed_args.output_dir,
                 output_path=parsed_args.output,
+                show_progress=not parsed_args.quiet,
             )
         except (OSError, RetrievalError, ValueError) as error:
             logger.error(  # ruff: ignore[error-instead-of-exception]

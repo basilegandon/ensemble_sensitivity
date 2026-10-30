@@ -192,6 +192,11 @@ def test_required_leads_reject_hours_without_published_z500(lead: int, step: int
         wcs_retrieval.required_leads(lead, step)
 
 
+def test_required_leads_reject_step_above_forecast_horizon() -> None:
+    with pytest.raises(ValueError, match="must not exceed 102"):
+        wcs_retrieval.required_leads(24, 105)
+
+
 def test_read_token_prefers_environment_and_parses_env_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

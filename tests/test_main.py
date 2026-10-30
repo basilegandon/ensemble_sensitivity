@@ -140,6 +140,9 @@ def test_verbosity_flags_work_before_and_after_the_subcommand() -> None:
     assert parse_args(["fetch", "--quiet"]).quiet is True
     with pytest.raises(SystemExit):
         parse_args(["fetch", "-v", "-q"])
+    for conflicting in (["-v", "fetch", "-q"], ["-q", "fetch", "-v"]):
+        with pytest.raises(SystemExit):
+            parse_args(conflicting)
 
 
 def test_quiet_fetch_hides_progress_and_info_logs(
@@ -149,17 +152,27 @@ def test_quiet_fetch_hides_progress_and_info_logs(
     retrieve = Mock(return_value=Path("retrieved-run"))
     monkeypatch.setattr(main_module, "retrieve_latest_complete_run", retrieve)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         main(["fetch", "-q"])
 
     assert retrieve.call_args.args[0].show_progress is False
-    assert logging.getLogger().level == logging.WARNING
+    assert logging.getLogger().level == logging.ERROR
     assert not caplog.text
+
+
+def test_quiet_plot_disables_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    render = Mock(return_value=(Path("map.png"),))
+    monkeypatch.setattr(main_module, "render_quicklooks", render)
+
+    main(["plot", "--run-dir", "run", "--lead-hours", "24", "-q"])
+    assert render.call_args.kwargs["show_progress"] is False
+    main(["plot", "--run-dir", "run", "--lead-hours", "24"])
+    assert render.call_args.kwargs["show_progress"] is True
 
 
 @pytest.mark.parametrize(
     ("verbose", "quiet", "expected"),
-    [(False, False, logging.INFO), (True, False, logging.DEBUG), (False, True, logging.WARNING)],
+    [(False, False, logging.INFO), (True, False, logging.DEBUG), (False, True, logging.ERROR)],
 )
 def test_configure_logging_levels(*, verbose: bool, quiet: bool, expected: int) -> None:
     configure_logging(verbose=verbose, quiet=quiet)
@@ -208,6 +221,7 @@ def test_main_plot_dispatches_rendering_and_logs_count(
         "members": "0,1",
         "output_dir": Path("maps"),
         "output_path": None,
+        "show_progress": True,
     }
     assert "Saved 2 quicklook map(s)" in caplog.text
 

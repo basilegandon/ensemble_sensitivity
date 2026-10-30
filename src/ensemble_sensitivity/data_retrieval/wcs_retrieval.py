@@ -157,11 +157,8 @@ class _RunPlan:
     executed_at: datetime
 
 
-def required_leads(target_lead_hours: int, step_hours: int) -> tuple[int, ...]:
-    """Return target and preceding leads at the selected interval.
-
-    Returns:
-        Requested forecast leads in descending order.
+def _validate_lead_arguments(target_lead_hours: int, step_hours: int) -> None:
+    """Validate the requested lead time and step.
 
     Raises:
         ValueError: If the target lead or interval is invalid.
@@ -169,13 +166,35 @@ def required_leads(target_lead_hours: int, step_hours: int) -> tuple[int, ...]:
     """
     if not 0 <= target_lead_hours <= MAX_FORECAST_LEAD_HOURS:
         raise ValueError(f"target lead must be between 0 and {MAX_FORECAST_LEAD_HOURS} hours")
-    if step_hours < 1:
-        raise ValueError("time step must be positive")
+    if not 1 <= step_hours <= MAX_FORECAST_LEAD_HOURS:
+        raise ValueError(_invalid_step_message(step_hours))
     if target_lead_hours % LEAD_CADENCE_HOURS or step_hours % LEAD_CADENCE_HOURS:
         raise ValueError(
             f"lead time and step must be multiples of {LEAD_CADENCE_HOURS} hours "
             "(Z500 is only published every 3 h)"
         )
+
+
+def _invalid_step_message(step_hours: int) -> str:
+    """Describe why a step is outside the supported range.
+
+    Returns:
+        Error message for the invalid step.
+
+    """
+    if step_hours < 1:
+        return "time step must be positive"
+    return f"time step must not exceed {MAX_FORECAST_LEAD_HOURS} hours"
+
+
+def required_leads(target_lead_hours: int, step_hours: int) -> tuple[int, ...]:
+    """Return target and preceding leads at the selected interval.
+
+    Returns:
+        Requested forecast leads in descending order.
+
+    """
+    _validate_lead_arguments(target_lead_hours, step_hours)
     return tuple(range(target_lead_hours, -1, -step_hours))
 
 

@@ -655,13 +655,14 @@ def _write_provenance(context: _QuicklookContext) -> None:
     temporary_sidecar_path.replace(sidecar_path)
 
 
-def render_quicklooks(
+def render_quicklooks(  # ruff: ignore[too-many-arguments]
     run_dir: Path,
     *,
     lead_hours: str | Sequence[int],
     members: str | Sequence[int] = "0",
     output_dir: Path | None = None,
     output_path: Path | None = None,
+    show_progress: bool = True,
 ) -> tuple[Path, ...]:
     """Render selected members and leads with one batch progress bar.
 
@@ -682,6 +683,7 @@ def render_quicklooks(
         jobs,
         output_dir=output_dir or maps_dir,
         output_path=output_path,
+        show_progress=show_progress,
     )
 
 
@@ -811,6 +813,7 @@ def _render_quicklook_jobs(
     *,
     output_dir: Path,
     output_path: Path | None,
+    show_progress: bool,
 ) -> tuple[Path, ...]:
     """Render validated selections and return their output paths.
 
@@ -824,6 +827,7 @@ def _render_quicklook_jobs(
         desc="Quicklooks",
         unit="map",
         dynamic_ncols=True,
+        disable=not show_progress,
     ) as progress:
         for lead, member in jobs:
             progress.set_description(f"Quicklook Z500 | t+{lead}h | member {member:03}")
