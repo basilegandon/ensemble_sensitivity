@@ -7,7 +7,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from email.message import Message
 from itertools import pairwise
 from typing import TYPE_CHECKING, ClassVar, Self, cast, override
@@ -28,6 +28,9 @@ from ensemble_sensitivity.data_retrieval.wcs_retrieval import RetrievalError, Re
 if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
+
+
+EXECUTED_AT = datetime(2026, 10, 4, 8, 5, 30, tzinfo=UTC)
 
 
 class FakeEccodes(visualization._ArrayEccodes):
@@ -181,6 +184,17 @@ def test_required_leads_and_invalid_arguments() -> None:
         wcs_retrieval.required_leads(103, 24)
     with pytest.raises(ValueError, match="positive"):
         wcs_retrieval.required_leads(24, 0)
+
+
+@pytest.mark.parametrize(("lead", "step"), [(100, 24), (24, 5), (25, 3)])
+def test_required_leads_reject_hours_without_published_z500(lead: int, step: int) -> None:
+    with pytest.raises(ValueError, match="multiples of 3 hours"):
+        wcs_retrieval.required_leads(lead, step)
+
+
+def test_required_leads_reject_step_above_forecast_horizon() -> None:
+    with pytest.raises(ValueError, match="must not exceed 102"):
+        wcs_retrieval.required_leads(24, 105)
 
 
 def test_read_token_prefers_environment_and_parses_env_file(
@@ -636,28 +650,27 @@ def test_latest_complete_search_falls_back_and_writes_traceable_manifest(
             step_hours=24,
             output_dir=tmp_path,
             env_file=tmp_path / ".env",
+            executed_at=EXECUTED_AT,
         )
     )
 
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert run_dir == tmp_path / "run_2026-10-04-08-05-Z_lead_time_0_step_24"
+    raw_fetch = run_dir / "raw_fetch"
+    manifest = json.loads((raw_fetch / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
     assert manifest["coverage_id"].endswith("2026-10-03T18.00.00Z")
+    assert manifest["executed_at_utc"] == "2026-10-04T08:05:30+00:00"
     assert len(manifest["fields"]) == 2
     assert manifest["bytes_received"] == 2 * len(_valid_grib_message())
-    assert (run_dir / "member_000_lead_000.grib").read_bytes() == _valid_grib_message()
-    failed_manifest = json.loads(
-        (tmp_path / "run_2026100400_t0_s24" / "manifest.json").read_text(encoding="utf-8")
-    )
-    assert failed_manifest["status"] == "failed"
-    assert "member unavailable" in failed_manifest["failure"]
-    assert failed_manifest["bytes_received"] == 0
+    assert (raw_fetch / "member_000_lead_000.grib").read_bytes() == _valid_grib_message()
+    assert sorted(path.name for path in run_dir.iterdir()) == ["raw_fetch"]
     assert len(calls) == 3
     assert [progress.total for progress in RecordingProgress.instances] == [2, 2]
     assert [progress.count for progress in RecordingProgress.instances] == [0, 2]
     assert "Z500" in RecordingProgress.instances[1].descriptions[0]
 
 
-def test_retrieval_revalidates_cached_fields_before_reuse(
+def test_failed_retrieval_leaves_nothing_behind(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -669,55 +682,89 @@ def test_retrieval_revalidates_cached_fields_before_reuse(
         lambda _token: _capabilities("2026-10-04T00.00.00Z"),
     )
     monkeypatch.setattr(wcs_retrieval, "_load_eccodes", lambda: FakeEccodes(_metadata()))
-    requests: list[int] = []
 
-    def request_field(_token: str, _coverage: str, member: int, _lead: int) -> bytes:
-        requests.append(member)
-        return _valid_grib_message()
-
-    def validate_grib(
-        body: bytes,
-        _eccodes: object,
-        *,
-        member: int,
-        lead_hours: int,
-        initialization: datetime,
-    ) -> dict[str, int | float | str]:
-        if body != _valid_grib_message():
-            message = "invalid cached field"
-            raise RetrievalError(message)
-        return _metadata(
-            member=member,
-            lead=lead_hours,
-            date=int(initialization.strftime("%Y%m%d")),
-        )
+    def request_field(*_args: object) -> bytes:
+        message = "HTTP 404"
+        raise RetrievalError(message)
 
     monkeypatch.setattr(wcs_retrieval, "_request_field", request_field)
-    monkeypatch.setattr(wcs_retrieval, "_validate_grib", validate_grib)
     options = RetrievalOptions(
         target_lead_hours=0,
         step_hours=24,
         output_dir=tmp_path,
         env_file=tmp_path / ".env",
+        show_progress=False,
+        executed_at=EXECUTED_AT,
     )
-    run_dir = wcs_retrieval.retrieve_latest_complete_run(options)
-    field_path = run_dir / "member_000_lead_000.grib"
-    field_path.write_bytes(b"broken cache")
 
-    reused_dir = wcs_retrieval.retrieve_latest_complete_run(options)
-    manifest = json.loads((reused_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert reused_dir == run_dir
-    assert len(requests) == 2
-    assert manifest["status"] == "complete"
-    assert manifest["fields"][0]["reused"] is False
-    assert manifest["bytes_received"] == len(_valid_grib_message())
-    assert field_path.read_bytes() == _valid_grib_message()
+    with pytest.raises(RetrievalError, match=r"No complete WCS run.*HTTP 404"):
+        wcs_retrieval.retrieve_latest_complete_run(options)
 
-    reused_dir = wcs_retrieval.retrieve_latest_complete_run(options)
-    manifest = json.loads((reused_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert len(requests) == 2
-    assert manifest["fields"][0]["reused"] is True
-    assert manifest["bytes_received"] == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_interrupted_retrieval_removes_partial_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(wcs_retrieval, "read_token", lambda _path: "secret-token")
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_get_capabilities",
+        lambda _token: _capabilities("2026-10-04T00.00.00Z"),
+    )
+    monkeypatch.setattr(wcs_retrieval, "_load_eccodes", lambda: FakeEccodes(_metadata()))
+    monkeypatch.setattr(wcs_retrieval, "_request_field", Mock(side_effect=KeyboardInterrupt))
+    options = RetrievalOptions(
+        target_lead_hours=0,
+        step_hours=24,
+        output_dir=tmp_path,
+        env_file=tmp_path / ".env",
+        show_progress=False,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        wcs_retrieval.retrieve_latest_complete_run(options)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_retrieval_refuses_to_overwrite_an_existing_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(wcs_retrieval, "read_token", lambda _path: "secret-token")
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_get_capabilities",
+        lambda _token: _capabilities("2026-10-04T00.00.00Z"),
+    )
+    monkeypatch.setattr(wcs_retrieval, "_load_eccodes", lambda: FakeEccodes(_metadata()))
+    existing = tmp_path / "run_2026-10-04-08-05-Z_lead_time_0_step_24"
+    existing.mkdir()
+    (existing / "keep.txt").write_text("previous data", encoding="utf-8")
+
+    with pytest.raises(RetrievalError, match="already exists"):
+        wcs_retrieval.retrieve_latest_complete_run(
+            RetrievalOptions(
+                target_lead_hours=0,
+                step_hours=24,
+                output_dir=tmp_path,
+                env_file=tmp_path / ".env",
+                executed_at=EXECUTED_AT,
+            )
+        )
+
+    assert (existing / "keep.txt").read_text(encoding="utf-8") == "previous data"
+
+
+def test_run_directory_name_uses_utc_minute_lead_and_step() -> None:
+    paris = timezone(timedelta(hours=2))
+
+    assert (
+        wcs_retrieval.run_directory_name(datetime(2026, 10, 30, 10, 59, 51, tzinfo=paris), 72, 6)
+        == "run_2026-10-30-08-59-Z_lead_time_72_step_6"
+    )
 
 
 def test_visualization_requires_complete_run_manifest(tmp_path: Path) -> None:

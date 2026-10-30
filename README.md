@@ -58,7 +58,9 @@ fur et à mesure qu’elles seront appuyées par des essais ou des données.
 - Comment précalculer assez de cartes pour que le déplacement du curseur soit
   fluide, sans produire ou stocker un volume excessif ?
 - Pour ne récupérer que les champs Z500 requis, quelle voie est la plus rapide
-  et la plus économe : l’API WCS ou les fichiers GRIB ouverts ?
+  et la plus économe ? Décision actuelle : l’API WCS (GRIB sélectif), voir
+  [`data_retrieval`](data_retrieval/README.md) ; les fichiers GRIB ouverts n’ont
+  pas été mesurés.
 - Après la première phase, faut-il proposer des échéances antérieures plus
   rapprochées que le pas initial de 24 h ?
 - Quelle méthode permettra plus tard de juger la significativité d’une carte

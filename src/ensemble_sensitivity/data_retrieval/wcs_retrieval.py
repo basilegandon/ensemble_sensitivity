@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -38,6 +39,9 @@ COVERAGE_PREFIX = "GEOPOTENTIAL__ISOBARIC_SURFACE___"
 VARIABLE_NAME = "PEARP_METEO_FRANCE_API_TOKEN"
 MEMBERS = tuple(range(35))
 MAX_FORECAST_LEAD_HOURS = 102
+# DescribeCoverage advertises Z500 only every 3 h, from +0 h to +102 h.
+LEAD_CADENCE_HOURS = 3
+RAW_FETCH_DIRNAME = "raw_fetch"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 90
 MAX_THROTTLE_RETRIES = 5
@@ -112,6 +116,8 @@ class RetrievalOptions:
     output_dir: Path
     env_file: Path
     coverage_id: str | None = None
+    show_progress: bool = True
+    executed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +129,6 @@ class FieldRecord:
     relative_path: str
     bytes_received: int
     elapsed_seconds: float
-    reused: bool
     grib_metadata: dict[str, int | float | str]
 
 
@@ -136,28 +141,50 @@ class _CandidateRequest:
     token: str
     eccodes: _Eccodes
     leads: tuple[int, ...]
-    output_dir: Path
+    run_dir: Path
     target: int
     step: int
+    executed_at: datetime
+    show_progress: bool
 
 
-@dataclass(slots=True)
-class _CandidateRunState:
-    """Mutable files and records for one candidate retrieval."""
+@dataclass(frozen=True, slots=True)
+class _RunPlan:
+    """Leads and output location shared by every candidate of one execution."""
 
+    leads: tuple[int, ...]
     run_dir: Path
-    identity: dict[str, object]
-    records: list[FieldRecord]
+    executed_at: datetime
 
 
-class _Progress(Protocol):
-    """Progress operations used while retrieving a candidate."""
+def _validate_lead_arguments(target_lead_hours: int, step_hours: int) -> None:
+    """Validate the requested lead time and step.
 
-    def set_description(self, _desc: str | None = None, /) -> None:
-        """Set the progress description."""
+    Raises:
+        ValueError: If the target lead or interval is invalid.
 
-    def update(self, _n: int = 1, /) -> bool | None:
-        """Advance the progress bar."""
+    """
+    if not 0 <= target_lead_hours <= MAX_FORECAST_LEAD_HOURS:
+        raise ValueError(f"target lead must be between 0 and {MAX_FORECAST_LEAD_HOURS} hours")
+    if not 1 <= step_hours <= MAX_FORECAST_LEAD_HOURS:
+        raise ValueError(_invalid_step_message(step_hours))
+    if target_lead_hours % LEAD_CADENCE_HOURS or step_hours % LEAD_CADENCE_HOURS:
+        raise ValueError(
+            f"lead time and step must be multiples of {LEAD_CADENCE_HOURS} hours "
+            "(Z500 is only published every 3 h)"
+        )
+
+
+def _invalid_step_message(step_hours: int) -> str:
+    """Describe why a step is outside the supported range.
+
+    Returns:
+        Error message for the invalid step.
+
+    """
+    if step_hours < 1:
+        return "time step must be positive"
+    return f"time step must not exceed {MAX_FORECAST_LEAD_HOURS} hours"
 
 
 def required_leads(target_lead_hours: int, step_hours: int) -> tuple[int, ...]:
@@ -166,14 +193,8 @@ def required_leads(target_lead_hours: int, step_hours: int) -> tuple[int, ...]:
     Returns:
         Requested forecast leads in descending order.
 
-    Raises:
-        ValueError: If the target lead or interval is invalid.
-
     """
-    if not 0 <= target_lead_hours <= MAX_FORECAST_LEAD_HOURS:
-        raise ValueError(f"target lead must be between 0 and {MAX_FORECAST_LEAD_HOURS} hours")
-    if step_hours < 1:
-        raise ValueError("time step must be positive")
+    _validate_lead_arguments(target_lead_hours, step_hours)
     return tuple(range(target_lead_hours, -1, -step_hours))
 
 
@@ -554,7 +575,7 @@ def _wait_for_request_slot(context: str) -> None:
                 _request_timestamps.append(now)
                 return
             delay += SCHEDULING_EPSILON_SECONDS
-            logger.info(
+            logger.debug(
                 "Waiting %.3f s before WCS request %s to stay within %d requests/min",
                 delay,
                 context,
@@ -820,15 +841,17 @@ def _validate_grib_content(
         )
 
 
-def _candidate_dir(output_dir: Path, initialization: datetime, target: int, step: int) -> Path:
-    """Build a portable output directory name for a run and request.
+def run_directory_name(executed_at: datetime, target_lead_hours: int, step_hours: int) -> str:
+    """Name the output directory of one execution.
+
+    Example: ``run_2026-10-30-09-59-Z_lead_time_24_step_24``.
 
     Returns:
-        Candidate run output directory.
+        Directory name based on the UTC execution minute and the requested hours.
 
     """
-    name = f"run_{initialization:%Y%m%d%H}_t{target}_s{step}"
-    return output_dir / name
+    stamp = f"{executed_at.astimezone(UTC):%Y-%m-%d-%H-%M}-Z"
+    return f"run_{stamp}_lead_time_{target_lead_hours}_step_{step_hours}"
 
 
 def _write_manifest(run_dir: Path, manifest: Mapping[str, object]) -> None:
@@ -842,34 +865,21 @@ def _write_manifest(run_dir: Path, manifest: Mapping[str, object]) -> None:
     temporary_path.replace(path)
 
 
-def _obtain_field(
+def _fetch_field(
     candidate: _CandidateRequest,
     *,
     member: int,
     lead: int,
-    field_path: Path,
-) -> tuple[bytes, dict[str, int | float | str], bool]:
-    """Validate a cache field or fetch, validate, and atomically store it.
+    staging_dir: Path,
+) -> FieldRecord:
+    """Fetch one member/lead GRIB message, validate it, and store it atomically.
 
     Returns:
-        GRIB bytes, validated metadata, and whether the field was reused.
+        Traceability record of the validated field.
 
     """
-    if field_path.is_file():
-        cached_body = field_path.read_bytes()
-        try:
-            metadata = _validate_grib(
-                cached_body,
-                candidate.eccodes,
-                member=member,
-                lead_hours=lead,
-                initialization=candidate.initialization,
-            )
-        except RetrievalError:
-            logger.warning("Cached GRIB field failed validation; fetching again: %s", field_path)
-        else:
-            return cached_body, metadata, True
-
+    started = monotonic()
+    relative_path = f"member_{member:03}_lead_{lead:03}.grib"
     body = _request_field(candidate.token, candidate.coverage_id, member, lead)
     metadata = _validate_grib(
         body,
@@ -878,204 +888,104 @@ def _obtain_field(
         lead_hours=lead,
         initialization=candidate.initialization,
     )
+    field_path = staging_dir / relative_path
     temporary_path = field_path.with_suffix(".grib.tmp")
     temporary_path.write_bytes(body)
     temporary_path.replace(field_path)
-    return body, metadata, False
-
-
-def _run_candidate(candidate: _CandidateRequest) -> Path:
-    """Fetch/resume a candidate and mark it complete only after all fields pass.
-
-    Returns:
-        Directory containing the complete run fields and manifest.
-
-    """
-    state = _prepare_candidate_run(candidate)
-    with tqdm(
-        total=len(candidate.leads) * len(MEMBERS),
-        desc=f"WCS {candidate.initialization:%Y-%m-%d %H} UTC",
-        unit="field",
-        dynamic_ncols=True,
-    ) as progress:
-        _process_candidate_fields(candidate, state, progress)
-    return _complete_candidate_run(state)
-
-
-def _prepare_candidate_run(candidate: _CandidateRequest) -> _CandidateRunState:
-    """Create or resume a candidate run and persist its initial manifest.
-
-    Returns:
-        Candidate state initialized with the request identity.
-
-    """
-    run_dir = _candidate_dir(
-        candidate.output_dir,
-        candidate.initialization,
-        candidate.target,
-        candidate.step,
-    )
-    run_dir.mkdir(parents=True, exist_ok=True)
-    identity: dict[str, object] = {
-        "coverage_id": candidate.coverage_id,
-        "initialization_utc": candidate.initialization.isoformat(),
-        "target_lead_hours": candidate.target,
-        "time_step_hours": candidate.step,
-        "required_leads_hours": list(candidate.leads),
-        "members": list(MEMBERS),
-        "status": "in_progress",
-        "source": "Météo-France PE-ARPEGE WCS GLOB025",
-        "variable": "Z500",
-        "units": "m**2 s**-2",
-        "fields": [],
-    }
-    _validate_resumed_candidate(run_dir, identity)
-    state = _CandidateRunState(run_dir, identity, [])
-    _write_manifest(run_dir, identity)
-    return state
-
-
-def _validate_resumed_candidate(run_dir: Path, identity: dict[str, object]) -> None:
-    """Ensure an existing run directory belongs to the same retrieval request.
-
-    Raises:
-        RetrievalError: If the existing manifest is invalid or mismatched.
-
-    """
-    manifest_path = run_dir / "manifest.json"
-    if not manifest_path.exists():
-        return
-    old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(old_manifest, dict):
-        raise RetrievalError(f"Existing manifest is not a JSON object: {manifest_path}")
-    keys = (
-        "coverage_id",
-        "target_lead_hours",
-        "time_step_hours",
-        "required_leads_hours",
-        "members",
-    )
-    for key in keys:
-        if old_manifest.get(key) != identity[key]:
-            raise RetrievalError(f"Existing manifest has different request identity: {key}")
-
-
-def _process_candidate_fields(
-    candidate: _CandidateRequest,
-    state: _CandidateRunState,
-    progress: _Progress,
-) -> None:
-    """Retrieve, validate, and record every requested field in one candidate.
-
-    Raises:
-        RetrievalError: If a required field fails retrieval or validation.
-
-    """
-    for lead, member in product(candidate.leads, MEMBERS):
-        progress.set_description(
-            f"WCS {candidate.initialization:%Y-%m-%d %H} UTC "
-            f"| Z500 | t+{lead}h | member {member:03}"
-        )
-        try:
-            record = _record_candidate_field(candidate, state, lead=lead, member=member)
-        except RetrievalError as error:
-            _mark_candidate_failed(state, error)
-            raise
-        progress.update()
-        logger.info(
-            "Validated variable=Z500 lead=%03dh member=%03d bytes=%d reused=%s",
-            lead,
-            member,
-            record.bytes_received,
-            record.reused,
-        )
-
-
-def _record_candidate_field(
-    candidate: _CandidateRequest,
-    state: _CandidateRunState,
-    *,
-    lead: int,
-    member: int,
-) -> FieldRecord:
-    """Obtain one field, add its record to run state, and persist the manifest.
-
-    Returns:
-        The field record after validation and persistence.
-
-    """
-    started = monotonic()
-    relative_path = f"member_{member:03}_lead_{lead:03}.grib"
-    body, metadata, reused = _obtain_field(
-        candidate,
-        member=member,
-        lead=lead,
-        field_path=state.run_dir / relative_path,
-    )
-    record = FieldRecord(
+    return FieldRecord(
         member=member,
         lead_hours=lead,
         relative_path=relative_path,
         bytes_received=len(body),
         elapsed_seconds=round(monotonic() - started, 3),
-        reused=reused,
         grib_metadata=metadata,
     )
-    state.records.append(record)
-    state.identity["fields"] = [asdict(item) for item in state.records]
-    _write_manifest(state.run_dir, state.identity)
-    return record
 
 
-def _mark_candidate_failed(state: _CandidateRunState, error: RetrievalError) -> None:
-    """Persist failure status and completed-field metrics before propagating an error."""
-    state.identity["status"] = "failed"
-    state.identity["failure"] = str(error)
-    state.identity["fields"] = [asdict(item) for item in state.records]
-    state.identity["elapsed_seconds"] = _elapsed_seconds(state.records)
-    state.identity["bytes_received"] = _bytes_received(state.records)
-    _write_manifest(state.run_dir, state.identity)
-
-
-def _elapsed_seconds(records: list[FieldRecord]) -> float:
-    """Return rounded total field processing time.
+def _fetch_candidate_fields(candidate: _CandidateRequest, staging_dir: Path) -> list[FieldRecord]:
+    """Retrieve and validate every requested member/lead field of one candidate.
 
     Returns:
-        Sum of field processing times, rounded to milliseconds.
+        One record per field, in retrieval order.
 
     """
-    return round(sum(record.elapsed_seconds for record in records), 3)
+    label = f"WCS {candidate.initialization:%Y-%m-%d %H} UTC"
+    records: list[FieldRecord] = []
+    with tqdm(
+        total=len(candidate.leads) * len(MEMBERS),
+        desc=label,
+        unit="field",
+        dynamic_ncols=True,
+        leave=False,
+        disable=not candidate.show_progress,
+    ) as progress:
+        for lead, member in product(candidate.leads, MEMBERS):
+            progress.set_description(f"{label} | Z500 | t+{lead}h | member {member:03}")
+            record = _fetch_field(candidate, member=member, lead=lead, staging_dir=staging_dir)
+            records.append(record)
+            progress.update()
+            logger.debug(
+                "Validated variable=Z500 lead=%03dh member=%03d bytes=%d",
+                lead,
+                member,
+                record.bytes_received,
+            )
+    return records
 
 
-def _bytes_received(records: list[FieldRecord]) -> int:
-    """Return bytes fetched from the service, excluding reused cache entries.
+def _manifest(candidate: _CandidateRequest, records: list[FieldRecord]) -> dict[str, object]:
+    """Describe a complete candidate retrieval for later stages.
 
     Returns:
-        Total bytes for fields fetched during this run.
+        JSON-serializable manifest including request identity and fetch metrics.
 
     """
-    return sum(record.bytes_received for record in records if not record.reused)
+    return {
+        "coverage_id": candidate.coverage_id,
+        "initialization_utc": candidate.initialization.isoformat(),
+        "executed_at_utc": candidate.executed_at.astimezone(UTC).isoformat(),
+        "target_lead_hours": candidate.target,
+        "time_step_hours": candidate.step,
+        "required_leads_hours": list(candidate.leads),
+        "members": list(MEMBERS),
+        "status": "complete",
+        "source": "Météo-France PE-ARPEGE WCS GLOB025",
+        "variable": "Z500",
+        "units": "m**2 s**-2",
+        "fields": [asdict(record) for record in records],
+        "elapsed_seconds": round(sum(record.elapsed_seconds for record in records), 3),
+        "bytes_received": sum(record.bytes_received for record in records),
+    }
 
 
-def _complete_candidate_run(state: _CandidateRunState) -> Path:
-    """Persist successful run status and aggregate metrics.
+def _run_candidate(candidate: _CandidateRequest) -> Path:
+    """Fetch a candidate into a staging directory and publish it only when complete.
 
     Returns:
-        The completed candidate directory.
+        The ``raw_fetch`` directory holding the GRIB fields and the manifest.
 
     """
-    state.identity["status"] = "complete"
-    state.identity["elapsed_seconds"] = _elapsed_seconds(state.records)
-    state.identity["bytes_received"] = _bytes_received(state.records)
-    _write_manifest(state.run_dir, state.identity)
-    return state.run_dir
+    staging_dir = candidate.run_dir / f".attempt_{candidate.initialization:%Y%m%d%H}"
+    staging_dir.mkdir()
+    try:
+        records = _fetch_candidate_fields(candidate, staging_dir)
+        _write_manifest(staging_dir, _manifest(candidate, records))
+        raw_fetch_dir = candidate.run_dir / RAW_FETCH_DIRNAME
+        staging_dir.replace(raw_fetch_dir)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return raw_fetch_dir
 
 
 def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
     """Retrieve the newest advertised run complete for every required field.
 
+    The run is written to ``<output_dir>/run_<execution time>_lead_time_<lead>_step_<step>``;
+    its ``raw_fetch`` subdirectory holds the validated GRIB files and ``manifest.json``.
+    Nothing is left on disk when no candidate run is complete.
+
     Returns:
-        Directory containing the complete run fields and manifest.
+        The run directory containing ``raw_fetch``.
 
     Raises:
         RetrievalError: If no candidate is complete for the requested fields.
@@ -1083,12 +993,42 @@ def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
     """
     leads = required_leads(options.target_lead_hours, options.step_hours)
     token = read_token(options.env_file)
+    eccodes = _load_eccodes()
     candidates = _candidate_runs(options, token)
-    run_dir, failures = _try_candidate_runs(options, token, candidates, leads)
-    if run_dir is not None:
-        return run_dir
-    summary = _candidate_failure_summary(failures)
-    raise RetrievalError(f"No complete WCS run found for required leads {leads}: {summary}")
+    plan = _create_run_plan(options, leads)
+    try:
+        raw_fetch_dir, failures = _try_candidate_runs(options, token, candidates, plan, eccodes)
+    except BaseException:
+        shutil.rmtree(plan.run_dir, ignore_errors=True)
+        raise
+    if raw_fetch_dir is None:
+        shutil.rmtree(plan.run_dir, ignore_errors=True)
+        summary = _candidate_failure_summary(failures)
+        raise RetrievalError(f"No complete WCS run found for required leads {leads}: {summary}")
+    return plan.run_dir
+
+
+def _create_run_plan(options: RetrievalOptions, leads: tuple[int, ...]) -> _RunPlan:
+    """Create the execution-specific output directory.
+
+    Returns:
+        Required leads, new run directory, and execution time.
+
+    Raises:
+        RetrievalError: If the directory for this execution minute already exists.
+
+    """
+    executed_at = options.executed_at or datetime.now(UTC)
+    run_dir = options.output_dir / run_directory_name(
+        executed_at, options.target_lead_hours, options.step_hours
+    )
+    try:
+        run_dir.mkdir(parents=True)
+    except FileExistsError as error:
+        raise RetrievalError(
+            f"Output directory already exists; retry in a minute: {run_dir}"
+        ) from error
+    return _RunPlan(leads=leads, run_dir=run_dir, executed_at=executed_at)
 
 
 def _candidate_runs(
@@ -1117,25 +1057,25 @@ def _try_candidate_runs(
     options: RetrievalOptions,
     token: str,
     candidates: tuple[tuple[str, datetime], ...],
-    leads: tuple[int, ...],
+    plan: _RunPlan,
+    eccodes: _Eccodes,
 ) -> tuple[Path | None, list[str]]:
     """Try candidates in order, recording expected retrieval failures.
 
     Returns:
-        First complete run directory if one succeeds, plus candidate failures.
+        ``raw_fetch`` directory of the first complete candidate, plus candidate failures.
 
     """
-    eccodes = _load_eccodes()
     failures: list[str] = []
     for coverage_id, initialization in candidates:
-        logger.info("Checking WCS run %s for leads %s", coverage_id, leads)
+        logger.info("Checking WCS run %s for leads %s", coverage_id, plan.leads)
         try:
-            run_dir = _run_candidate(
+            raw_fetch_dir = _run_candidate(
                 _make_candidate_request(
                     options,
                     token,
                     (coverage_id, initialization),
-                    leads,
+                    plan,
                     eccodes,
                 )
             )
@@ -1143,7 +1083,7 @@ def _try_candidate_runs(
             failures.append(f"{coverage_id}: {error}")
             logger.warning("Candidate run incomplete: %s", failures[-1])
         else:
-            return run_dir, failures
+            return raw_fetch_dir, failures
     return None, failures
 
 
@@ -1151,7 +1091,7 @@ def _make_candidate_request(
     options: RetrievalOptions,
     token: str,
     candidate: tuple[str, datetime],
-    leads: tuple[int, ...],
+    plan: _RunPlan,
     eccodes: _Eccodes,
 ) -> _CandidateRequest:
     """Combine retrieval options and advertised metadata into a candidate.
@@ -1166,10 +1106,12 @@ def _make_candidate_request(
         initialization=initialization,
         token=token,
         eccodes=eccodes,
-        leads=leads,
-        output_dir=options.output_dir,
+        leads=plan.leads,
+        run_dir=plan.run_dir,
         target=options.target_lead_hours,
         step=options.step_hours,
+        executed_at=plan.executed_at,
+        show_progress=options.show_progress,
     )
 
 

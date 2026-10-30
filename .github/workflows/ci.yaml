@@ -95,6 +95,11 @@ jobs:
       - name: Security check
         run: uv run --locked --no-sync --no-build bandit -r src
 
+      - name: Install ecCodes native library
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libeccodes-dev
+
       - name: Tests
         run: uv run --locked --no-sync --no-build pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
         env:

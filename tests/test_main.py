@@ -113,14 +113,71 @@ def test_main_fetch_dispatches_retrieval_and_logs_result(
     monkeypatch.setattr(main_module, "retrieve_latest_complete_run", retrieve)
 
     with caplog.at_level(logging.INFO):
-        main(["fetch", "--target-lead-hours", "48", "--step-hours", "12"])
+        main(["fetch", "--lead-time", "48", "--step", "12"])
 
     options = retrieve.call_args.args[0]
     assert options.target_lead_hours == 48
     assert options.step_hours == 12
-    assert options.output_dir == Path("data") / "pearp"
+    assert options.output_dir == Path("output")
     assert options.env_file == Path(".env")
-    assert "Complete PEARP run saved to" in caplog.text
+    assert options.show_progress is True
+    assert "Raw GRIB fields saved to" in caplog.text
+    assert "raw_fetch" in caplog.text
+
+
+def test_fetch_needs_no_argument_and_accepts_short_options() -> None:
+    defaults = parse_args(["fetch"])
+    assert (defaults.lead_time, defaults.step) == (24, 24)
+    assert (defaults.verbose, defaults.quiet) == (False, False)
+
+    short = parse_args(["fetch", "-l", "72", "-s", "6", "-q"])
+    assert (short.lead_time, short.step, short.quiet) == (72, 6, True)
+
+
+def test_verbosity_flags_work_before_and_after_the_subcommand() -> None:
+    assert parse_args(["-v", "fetch"]).verbose is True
+    assert parse_args(["fetch", "-v"]).verbose is True
+    assert parse_args(["fetch", "--quiet"]).quiet is True
+    with pytest.raises(SystemExit):
+        parse_args(["fetch", "-v", "-q"])
+    for conflicting in (["-v", "fetch", "-q"], ["-q", "fetch", "-v"]):
+        with pytest.raises(SystemExit):
+            parse_args(conflicting)
+
+
+def test_quiet_fetch_hides_progress_and_info_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    retrieve = Mock(return_value=Path("retrieved-run"))
+    monkeypatch.setattr(main_module, "retrieve_latest_complete_run", retrieve)
+
+    with caplog.at_level(logging.ERROR):
+        main(["fetch", "-q"])
+
+    assert retrieve.call_args.args[0].show_progress is False
+    assert logging.getLogger().level == logging.ERROR
+    assert not caplog.text
+
+
+def test_quiet_plot_disables_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    render = Mock(return_value=(Path("map.png"),))
+    monkeypatch.setattr(main_module, "render_quicklooks", render)
+
+    main(["plot", "--run-dir", "run", "--lead-hours", "24", "-q"])
+    assert render.call_args.kwargs["show_progress"] is False
+    main(["plot", "--run-dir", "run", "--lead-hours", "24"])
+    assert render.call_args.kwargs["show_progress"] is True
+
+
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected"),
+    [(False, False, logging.INFO), (True, False, logging.DEBUG), (False, True, logging.ERROR)],
+)
+def test_configure_logging_levels(*, verbose: bool, quiet: bool, expected: int) -> None:
+    configure_logging(verbose=verbose, quiet=quiet)
+
+    assert logging.getLogger().level == expected
 
 
 def test_main_fetch_reports_retrieval_errors(
@@ -164,6 +221,7 @@ def test_main_plot_dispatches_rendering_and_logs_count(
         "members": "0,1",
         "output_dir": Path("maps"),
         "output_path": None,
+        "show_progress": True,
     }
     assert "Saved 2 quicklook map(s)" in caplog.text
 

@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
     MAX_RESPONSE_BYTES,
+    RAW_FETCH_DIRNAME,
     RetrievalError,
     _Eccodes,
     _load_eccodes,
@@ -654,13 +655,14 @@ def _write_provenance(context: _QuicklookContext) -> None:
     temporary_sidecar_path.replace(sidecar_path)
 
 
-def render_quicklooks(
+def render_quicklooks(  # ruff: ignore[too-many-arguments]
     run_dir: Path,
     *,
     lead_hours: str | Sequence[int],
     members: str | Sequence[int] = "0",
     output_dir: Path | None = None,
     output_path: Path | None = None,
+    show_progress: bool = True,
 ) -> tuple[Path, ...]:
     """Render selected members and leads with one batch progress bar.
 
@@ -668,19 +670,37 @@ def render_quicklooks(
         Paths to generated PNG quicklooks in lead-major, member-minor order.
 
     """
+    raw_dir, maps_dir = _locate_raw_fetch(run_dir)
     jobs = _resolve_quicklook_jobs(
-        run_dir,
+        raw_dir,
         lead_hours=lead_hours,
         members=members,
         output_dir=output_dir,
         output_path=output_path,
     )
     return _render_quicklook_jobs(
-        run_dir,
+        raw_dir,
         jobs,
-        output_dir=output_dir,
+        output_dir=output_dir or maps_dir,
         output_path=output_path,
+        show_progress=show_progress,
     )
+
+
+def _locate_raw_fetch(run_dir: Path) -> tuple[Path, Path]:
+    """Accept either an execution directory or its ``raw_fetch`` directory.
+
+    Returns:
+        The directory holding the manifest and the default quicklook directory,
+        which stays outside the unprocessed ``raw_fetch`` data.
+
+    """
+    raw_dir = run_dir / RAW_FETCH_DIRNAME
+    if (raw_dir / "manifest.json").is_file():
+        return raw_dir, run_dir / "maps"
+    if run_dir.name == RAW_FETCH_DIRNAME:
+        return run_dir, run_dir.parent / "maps"
+    return run_dir, run_dir / "maps"
 
 
 def _resolve_quicklook_jobs(
@@ -791,8 +811,9 @@ def _render_quicklook_jobs(
     run_dir: Path,
     jobs: tuple[tuple[int, int], ...],
     *,
-    output_dir: Path | None,
+    output_dir: Path,
     output_path: Path | None,
+    show_progress: bool,
 ) -> tuple[Path, ...]:
     """Render validated selections and return their output paths.
 
@@ -806,13 +827,13 @@ def _render_quicklook_jobs(
         desc="Quicklooks",
         unit="map",
         dynamic_ncols=True,
+        disable=not show_progress,
     ) as progress:
         for lead, member in jobs:
             progress.set_description(f"Quicklook Z500 | t+{lead}h | member {member:03}")
             selected_output = output_path
             if selected_output is None:
-                destination = output_dir or (run_dir / "maps")
-                selected_output = destination / f"z500_member_{member:03}_lead_{lead:03}.png"
+                selected_output = output_dir / f"z500_member_{member:03}_lead_{lead:03}.png"
             context = _load_quicklook_context(
                 run_dir,
                 lead_hours=lead,
