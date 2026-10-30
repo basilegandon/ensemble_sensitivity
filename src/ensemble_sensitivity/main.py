@@ -168,8 +168,12 @@ def main(args: Sequence[str] | None = None) -> None:
                     show_progress=not parsed_args.quiet,
                 )
             )
-        except OSError, RetrievalError, ValueError:
-            logger.exception("Unable to retrieve a complete PEARP run")
+        except (OSError, RetrievalError, ValueError) as error:
+            logger.error(  # ruff: ignore[error-instead-of-exception]
+                "Unable to retrieve a complete PEARP run: %s",
+                error,
+                exc_info=parsed_args.verbose,
+            )
             raise SystemExit(1) from None
         logger.info("Raw GRIB fields saved to %s", (run_dir / RAW_FETCH_DIRNAME).resolve())
         return
@@ -183,8 +187,12 @@ def main(args: Sequence[str] | None = None) -> None:
                 output_dir=parsed_args.output_dir,
                 output_path=parsed_args.output,
             )
-        except OSError, RetrievalError, ValueError:
-            logger.exception("Unable to render PEARP quicklook")
+        except (OSError, RetrievalError, ValueError) as error:
+            logger.error(  # ruff: ignore[error-instead-of-exception]
+                "Unable to render PEARP quicklook: %s",
+                error,
+                exc_info=parsed_args.verbose,
+            )
             raise SystemExit(1) from None
         logger.info("Saved %d quicklook map(s)", len(output_paths))
         return
