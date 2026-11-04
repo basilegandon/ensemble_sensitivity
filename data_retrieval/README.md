@@ -111,7 +111,21 @@ Produire une carte de contrôle pour un membre et une échéance :
 uv run ensemble-sensitivity plot --run-dir .\output\<uuid> --lead-hours 24 --members 0
 ```
 `plot` produit une carte du champ Z500 et ses métadonnées de provenance ; elle
-ne calcule pas de carte de sensibilité. Voir aussi le
+ne calcule pas de carte de sensibilité.
+
+Produire une carte de sensibilité (corrélation de Pearson signée, sans test de
+significativité) pour un run indexé :
+
+```powershell
+uv run ensemble-sensitivity sensitivity --run-id <uuid> --target-lead 72 --predictor-lead 48 --lat 46.5 --lon 2.5 --radius-km 300
+```
+
+`--run-id` est facultatif (run le plus récent de l’index) ; `--output-dir` vaut
+`output` par défaut. La carte (`PNG`, colormap divergente, zone cible tracée,
+mention « Source : Météo-France ») et son JSON de provenance sont écrits dans
+`output/<uuid>/maps/sensitivity_t<cible>_from_t<prédicteur>_lat…_lon…_r…km.*`.
+Les 35 membres et les deux échéances doivent figurer dans le run ; sinon la
+commande échoue avec un message explicite. Voir aussi le
 [flux du code actuel](../src/ensemble_sensitivity/README.md).
 
 Le décodage GRIB utilise ecCodes ; l’installation de sa bibliothèque native

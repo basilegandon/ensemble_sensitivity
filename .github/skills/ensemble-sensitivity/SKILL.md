@@ -7,10 +7,10 @@ description: Implement or review ensemble-sensitivity analysis, forecast-data in
 
 ## État du dépôt
 
-- Implémenté : `fetch` (WCS Météo-France, GRIB Z500 par membre et échéance, manifeste, validation ecCodes) dans `src/ensemble_sensitivity/data_retrieval/wcs_retrieval.py`, et `plot` (cartes de contrôle PNG + provenance JSON) dans `src/ensemble_sensitivity/visualization.py`. Point d'entrée : `src/ensemble_sensitivity/main.py` (`uv run ensemble-sensitivity fetch|plot`).
+- Implémenté : `fetch` (WCS Météo-France, GRIB Z500 par membre et échéance, manifeste, validation ecCodes) dans `src/ensemble_sensitivity/data_retrieval/wcs_retrieval.py`, et `plot` (cartes de contrôle PNG + provenance JSON) dans `src/ensemble_sensitivity/visualization.py`. Point d'entrée : `src/ensemble_sensitivity/main.py` (`uv run ensemble-sensitivity fetch|plot|sensitivity`).
 - Observabilité optionnelle : `src/ensemble_sensitivity/pipeline_checkpoint/`.
 - À faire (voir `analysis/README.md`, `analysis/ANALYSIS.md` et le README racine) : application interactive et significativité. Ne pas les présenter comme disponibles tant qu'elles ne sont pas codées et testées.
-- Calcul pur implémenté et testé : `src/ensemble_sensitivity/field_io.py` (ingestion/décodage), `sensitivity/zone.py`, `sensitivity/statistics.py`, `sensitivity/compute.py`. Pas encore relié à la CLI.
+- Calcul pur implémenté et testé : `src/ensemble_sensitivity/field_io.py` (ingestion/décodage), `sensitivity/zone.py`, `sensitivity/statistics.py`, `sensitivity/compute.py`. Relié à la commande `sensitivity` (`sensitivity/command.py` : résolution du run dans `runs_index.json`; `sensitivity/render.py` : PNG + JSON sous `<uuid>/maps`).
 
 ## Avant de modifier
 

@@ -27,8 +27,9 @@ ouvertes.
 
 Implémenté et testé (données synthétiques) : zone circulaire, moyenne pondérée
 cos(latitude), cible par membre, corrélation de Pearson signée sur les membres,
-avec mémoire bornée (un champ à la fois). Non implémenté : application
-interactive, précalcul, significativité, commande CLI.
+avec mémoire bornée (un champ à la fois). La commande `sensitivity` génère
+une carte PNG (colormap divergente, zone tracée) et son JSON sous `<uuid>/maps`.
+Non implémenté : application interactive, précalcul, significativité.
 
 Choix de conception : rayon limité à ]0, π·R] km (R = 6371,0088 km) ; mailles
 du pôle pondérées par cos(±90°) ≈ 0 ; une maille hors de la zone n’est jamais
