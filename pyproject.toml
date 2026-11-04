@@ -134,6 +134,15 @@ preview = true
     "raw-string-in-exception",
     "raise-vanilla-args",
 ]
+# Sensitivity errors carry numeric context; plain functions take many explicit parameters.
+"src/ensemble_sensitivity/sensitivity/*.py" = [
+    "f-string-in-exception",
+    "raw-string-in-exception",
+    "raise-vanilla-args",
+    "magic-value-comparison",
+    "float-equality-comparison",
+    "too-many-arguments",
+]
 # Visualization errors include the selected manifest/field context.
 "src/ensemble_sensitivity/visualization.py" = [
     "error-instead-of-exception",

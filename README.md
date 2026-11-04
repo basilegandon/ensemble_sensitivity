@@ -87,8 +87,9 @@ L’écart-type des 35 membres apparaît sur la carte cible. La carte de
 sensibilité est une corrélation de Pearson signée. Aucun test de significativité
 n’est appliqué dans cette phase.
 
-La récupération de champs Z500 et les cartes de contrôle par membre sont déjà
-disponibles. Le calcul de corrélation et l’application interactive restent à
+La récupération de champs Z500, les cartes de contrôle par membre et le module
+de calcul (zone cible, moyenne pondérée, corrélation de Pearson) sont déjà
+disponibles. L’application interactive et la significativité restent à
 construire. Le choix de la source de données et la stratégie de précalcul
 dépendent de mesures comparables de volume et de temps.
 

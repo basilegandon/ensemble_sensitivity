@@ -61,7 +61,7 @@ flowchart TB
     sorties --> resultats((Chemins des cartes produites))
     manifeste -. échec de lecture ou de validation .-> erreur
 
-    note["À venir : sélection de la zone cible, statistiques d'ensemble, cartes de sensibilité, test de significativité et export des résultats."]
+    note["À venir : commande de calcul, application interactive, test de significativité et export des résultats. Le module sensitivity/ existe mais n'est pas relié à la CLI."]
     run_complet -. étape distincte, non implémentée .-> note
 ```
 
@@ -78,6 +78,10 @@ des cartes de contrôle individuelles ; elle ne calcule pas de carte de
 sensibilité. En cas d’erreur pendant `fetch` ou `plot`, `main()` la journalise
 et termine avec le code 1.
 
-Les étapes statistiques décrites dans le README principal restent à
-implémenter. Le diagramme ne les présente donc pas comme des fonctions déjà
-disponibles.
+Le calcul statistique est implémenté dans le paquet `sensitivity/` (hors
+diagramme ci-dessus, car il n’est pas encore relié à une commande) :
+`field_io.py` (ingestion et décodage partagés avec `plot`), `sensitivity/zone.py`
+(sélection spatiale : cercle en km, poids cos(latitude)), `sensitivity/statistics.py`
+(moyenne pondérée, corrélation de Pearson en flux, un champ à la fois) et
+`sensitivity/compute.py` (orchestration). Aucune commande CLI, application
+interactive ni test de significativité n’existe encore.
