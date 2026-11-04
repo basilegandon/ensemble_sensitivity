@@ -27,6 +27,15 @@ uv run --locked --no-sync --no-build pytest
 
 If a check cannot run, state why and do not imply it passed.
 
+## Caveman (token-saving) mode
+
+Sessions in this repository use the global `caveman` skill by default. Load and follow `C:\Users\PC\.agents\skills\caveman\SKILL.md` at session start; the skill stays on until the user says "stop caveman" or "normal mode". Do not copy or edit the skills in the user's home directory; refer to them by name and path.
+
+- Default: `caveman` (`C:\Users\PC\.agents\skills\caveman`).
+- On request only: `ultracave` (`/ultracave` or `/caveman ultra`, maximum compression) or `megacave` (`/megacave` or `/caveman wenyan`, Classical Chinese). Both are in `C:\Users\PC\.agents\skills\`. When one is active, apply the compression to visible output and to internal reasoning as well, as far as the host allows.
+- Persisted content (code, comments, commits, documentation, issues, PRs, memory) stays normal prose: README and docs remain in French, instructions in English, as the skills themselves specify.
+- Related skills in the same folder, used when their own trigger applies: `caveman-commit` (commit messages), `caveman-review` (diff review), `caveman-compress` (compress a memory file; sends its text to the model provider), `caveman-help` (reference card), `caveman-stats` (token usage), `caveman-explore` (read-only repository localization), `caveman-learn`, `caveman-discover`, `caveman-setup`, `caveman-evidence-review`, `caveman-manage` and `caveman-optimize` (Caveman Cloud workflows; use only when explicitly requested).
+
 ## Git hooks
 
 After cloning the repository, install its local hooks once:
