@@ -899,7 +899,7 @@ def test_coordinates_are_validated_and_recentered_at_antimeridian() -> None:
         _valid_grib_message(),
         FakeEccodes(_metadata()),
     )
-    values, longitudes = visualization._recenter_longitudes(values, longitudes)
+    values, longitudes = field_io.recenter_longitudes(values, longitudes)
     assert values.shape == (721, 1440)
     assert longitudes[0] == pytest.approx(-180.0)
     assert longitudes[-1] == pytest.approx(179.75)

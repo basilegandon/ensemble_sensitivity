@@ -83,9 +83,9 @@ temporaire puis remplacement). Un index illisible ou d’un schéma inconnu fait
 deux lancements simultanés.
 
 **Rupture de compatibilité.** Les anciens dossiers
-`output/run_<date>_lead_time_<…>_step_<…>/` ne sont pas indexés ; `plot --run-dir`
-sait encore les lire (leur manifeste n’a pas de `run_id`, noté `null` dans la
-provenance des cartes). Il n’existait pas de reprise ni de cache à préserver :
+`output/run_<date>_lead_time_<…>_step_<…>/` ne sont plus pris en charge : ils ne
+sont pas indexés et ne sont pas migrés (ils ne contenaient que des essais) ; à
+supprimer. Il n’existait pas de reprise ni de cache à préserver :
 un `fetch` interrompu ne laissait rien. La protection « deux lancements dans la
 même minute refusés » n’a plus d’objet, deux lancements ayant deux UUID.
 
