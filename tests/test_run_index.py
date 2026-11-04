@@ -79,6 +79,7 @@ def test_prune_removes_only_entries_without_directory(tmp_path: Path) -> None:
         json.dumps({"schema_version": 99, "runs": {}}),
         json.dumps({"schema_version": 1, "runs": []}),
         json.dumps({"schema_version": 1, "runs": {"a": {"directory": "../escape"}}}),
+        json.dumps({"schema_version": 1, "runs": {"a": {"directory": ".."}}}),
         json.dumps({"schema_version": 1, "runs": {"a": {"directory": ""}}}),
         json.dumps({"schema_version": 1, "runs": {"a": "x"}}),
     ],

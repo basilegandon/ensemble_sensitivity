@@ -84,6 +84,21 @@ def _validated_runs(document: object, path: Path) -> dict[str, dict[str, object]
     return cast("dict[str, dict[str, object]]", runs)
 
 
+def _is_plain_directory_name(directory: object) -> bool:
+    """Tell whether ``directory`` is a single path component that cannot leave the root.
+
+    Returns:
+        ``True`` for a non-empty name other than ``..`` containing no separator.
+
+    """
+    return (
+        isinstance(directory, str)
+        and bool(directory)
+        and directory != ".."
+        and Path(directory).name == directory
+    )
+
+
 def _check_entry(run_id: object, entry: object, path: Path) -> None:
     """Check that an entry names a plain directory directly under the output root.
 
@@ -92,7 +107,7 @@ def _check_entry(run_id: object, entry: object, path: Path) -> None:
 
     """
     directory = entry.get("directory") if isinstance(entry, dict) else None
-    if not isinstance(directory, str) or not directory or Path(directory).name != directory:
+    if not _is_plain_directory_name(directory):
         raise RunIndexError(f"Run index entry {run_id!r} has an invalid directory: {path}")
 
 

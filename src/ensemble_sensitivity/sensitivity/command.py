@@ -76,8 +76,8 @@ def output_stem(request: SensitivityRequest) -> str:
     """
     return (
         f"sensitivity_t{request.target_lead_hours:03}_from_t{request.predictor_lead_hours:03}"
-        f"_lat{request.center_latitude:+.2f}_lon{request.center_longitude:+.2f}"
-        f"_r{request.radius_km:g}km"
+        f"_lat{float(request.center_latitude):+}_lon{float(request.center_longitude):+}"
+        f"_r{float(request.radius_km)}km"
     )
 
 

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, cast
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure
 
 from ensemble_sensitivity.field_io import recenter_longitudes
 from ensemble_sensitivity.sensitivity.zone import EARTH_RADIUS_KM
@@ -66,8 +66,8 @@ def zone_outline(
     )
     lat = np.arcsin(np.clip(sin_lat, -1.0, 1.0))
     lon = lon0 + np.arctan2(
-        np.sin(bearing) * math.sin(angular) * math.cos(lat0),
-        math.cos(angular) - math.sin(lat0) * np.sin(lat),
+        np.sin(bearing) * math.sin(angular),
+        math.cos(lat0) * math.cos(angular) - math.sin(lat0) * math.sin(angular) * np.cos(bearing),
     )
     return np.degrees(lon), np.degrees(lat)
 
@@ -97,54 +97,51 @@ def _draw_png(data: SensitivityFigure, output_path: Path) -> None:
     )
     temporary_path = output_path.with_name(f"{output_path.stem}.tmp.png")
     geographic = ccrs.PlateCarree()
-    figure = plt.figure(figsize=(13, 6.5), constrained_layout=True)
-    try:
-        axes = cast("GeoAxes", figure.add_subplot(1, 1, 1, projection=geographic))
-        extent = (
-            float(longitudes[0] - 0.125),
-            float(longitudes[-1] + 0.125),
-            float(data.latitudes[-1] - 0.125),
-            float(data.latitudes[0] + 0.125),
-        )
-        image = axes.imshow(
-            np.ma.masked_invalid(values),
-            origin="upper",
-            extent=extent,
-            transform=geographic,
-            cmap="RdBu_r",
-            vmin=-1.0,
-            vmax=1.0,
-            interpolation="nearest",
-            aspect="auto",
-            zorder=2,
-        )
-        axes.add_feature(cfeature.LAND, facecolor="#f2efe7", zorder=1)
-        axes.coastlines(resolution="110m", linewidth=0.6, color="#333333", zorder=3)
-        axes.set_global()
-        outline_lon, outline_lat = zone_outline(
-            data.center_latitude,
-            data.center_longitude,
-            data.radius_km,
-        )
-        axes.plot(
-            outline_lon,
-            outline_lat,
-            color="black",
-            linewidth=1.6,
-            transform=ccrs.Geodetic(),
-            zorder=4,
-        )
-        axes.set_title(
-            f"Sensibilité Z500 | run {data.initialization:%Y-%m-%d %H} UTC | "
-            f"cible t+{result.target_lead_hours} h, prédicteur t+{result.predictor_lead_hours} h | "
-            f"zone {data.center_latitude:.2f}, {data.center_longitude:.2f}, "
-            f"{data.radius_km:g} km | {result.member_count} membres"
-        )
-        figure.colorbar(image, ax=axes, label="Corrélation de Pearson (signée)")
-        figure.text(0.01, 0.01, SOURCE_CREDIT, ha="left", va="bottom")
-        figure.savefig(temporary_path, dpi=150, bbox_inches="tight")
-    finally:
-        plt.close(figure)
+    figure = Figure(figsize=(13, 6.5), layout="constrained")
+    axes = cast("GeoAxes", figure.add_subplot(1, 1, 1, projection=geographic))
+    extent = (
+        float(longitudes[0] - 0.125),
+        float(longitudes[-1] + 0.125),
+        float(data.latitudes[-1] - 0.125),
+        float(data.latitudes[0] + 0.125),
+    )
+    image = axes.imshow(
+        np.ma.masked_invalid(values),
+        origin="upper",
+        extent=extent,
+        transform=geographic,
+        cmap="RdBu_r",
+        vmin=-1.0,
+        vmax=1.0,
+        interpolation="nearest",
+        aspect="auto",
+        zorder=2,
+    )
+    axes.add_feature(cfeature.LAND, facecolor="#f2efe7", zorder=1)
+    axes.coastlines(resolution="110m", linewidth=0.6, color="#333333", zorder=3)
+    axes.set_global()
+    outline_lon, outline_lat = zone_outline(
+        data.center_latitude,
+        data.center_longitude,
+        data.radius_km,
+    )
+    axes.plot(
+        outline_lon,
+        outline_lat,
+        color="black",
+        linewidth=1.6,
+        transform=ccrs.Geodetic(),
+        zorder=4,
+    )
+    axes.set_title(
+        f"Sensibilité Z500 | run {data.initialization:%Y-%m-%d %H} UTC | "
+        f"cible t+{result.target_lead_hours} h, prédicteur t+{result.predictor_lead_hours} h | "
+        f"zone {data.center_latitude:.2f}, {data.center_longitude:.2f}, "
+        f"{data.radius_km:g} km | {result.member_count} membres"
+    )
+    figure.colorbar(image, ax=axes, label="Corrélation de Pearson (signée)")
+    figure.text(0.01, 0.01, SOURCE_CREDIT, ha="left", va="bottom")
+    figure.savefig(temporary_path, dpi=150, bbox_inches="tight")
     temporary_path.replace(output_path)
 
 

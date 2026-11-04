@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -82,6 +83,24 @@ def test_zone_outline_points_lie_at_the_requested_distance() -> None:
         )
         assert EARTH_RADIUS_KM * math.acos(min(1.0, cosine)) == pytest.approx(800.0, abs=1e-6)
     assert lon[0] == pytest.approx(lon[-1])
+
+
+@pytest.mark.parametrize("pole", [90.0, -90.0])
+def test_zone_outline_traces_the_polar_circle(pole: float) -> None:
+    lon, lat = render.zone_outline(pole, 0.0, 500.0)
+    assert lat == pytest.approx(pole - math.copysign(math.degrees(500.0 / EARTH_RADIUS_KM), pole))
+    wrapped = np.mod(lon, 360.0)
+    assert np.ptp(wrapped) > 300.0
+    assert len(np.unique(np.round(wrapped, 3))) > 10
+
+
+def test_output_stem_distinguishes_close_requests(tmp_path: Path) -> None:
+    first = replace(_request(tmp_path, None), center_latitude=45.501)
+    second = replace(first, center_latitude=45.504)
+    assert command.output_stem(first) != command.output_stem(second)
+    assert command.output_stem(replace(first, radius_km=300.0)) != command.output_stem(
+        replace(first, radius_km=300.0000001)
+    )
 
 
 def test_render_writes_png_and_provenance(
@@ -181,7 +200,7 @@ def test_run_sensitivity_wires_run_compute_and_outputs(
     assert seen["raw_dir"] == tmp_path / run_id / "raw_fetch"
     assert seen["members"] == tuple(range(35))
     assert output == tmp_path / run_id / "maps" / (
-        "sensitivity_t024_from_t000_lat+45.50_lon-3.00_r300km.png"
+        "sensitivity_t024_from_t000_lat+45.5_lon-3.0_r300.0km.png"
     )
     figure = seen["figure"]
     assert isinstance(figure, render.SensitivityFigure)
