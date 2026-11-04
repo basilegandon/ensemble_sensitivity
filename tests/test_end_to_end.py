@@ -12,6 +12,7 @@ from email.message import Message
 from typing import TYPE_CHECKING, Self
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 import eccodes
 import numpy as np
@@ -19,6 +20,7 @@ import pytest
 
 from ensemble_sensitivity.data_retrieval import wcs_retrieval
 from ensemble_sensitivity.main import main
+from ensemble_sensitivity.run_index import load_index
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,7 +32,6 @@ GRID_NJ = 721
 MEMBER_COUNT = 35
 NEWEST_RUN = "2026-10-04T00.00.00Z"
 OLDER_RUN = "2026-10-03T12.00.00Z"
-RUN_DIR_PATTERN = re.compile(r"run_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-Z_lead_time_48_step_24")
 
 
 class _Response:
@@ -148,8 +149,9 @@ def test_fetch_writes_usable_raw_grib_fields(
 ) -> None:
     main(["fetch", "-l", "48", "-s", "24", "-q"])
 
-    (run_dir,) = (tmp_path / "output").iterdir()
-    assert RUN_DIR_PATTERN.fullmatch(run_dir.name)
+    (run_dir,) = (path for path in (tmp_path / "output").iterdir() if path.is_dir())
+    assert UUID(run_dir.name).version == 4
+    assert list(load_index(tmp_path / "output")) == [run_dir.name]
     assert [path.name for path in run_dir.iterdir()] == ["raw_fetch"]
     raw_fetch = run_dir / "raw_fetch"
     fields = sorted(raw_fetch.glob("member_*_lead_*.grib"))
@@ -180,7 +182,7 @@ def test_fetch_falls_back_to_previous_run_when_newest_is_incomplete(
 
     main(["fetch", "-l", "24", "-s", "24", "-q"])
 
-    (run_dir,) = (tmp_path / "output").iterdir()
+    (run_dir,) = (path for path in (tmp_path / "output").iterdir() if path.is_dir())
     manifest = json.loads((run_dir / "raw_fetch" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["coverage_id"].endswith(OLDER_RUN)
     assert sorted(path.name for path in run_dir.iterdir()) == ["raw_fetch"]

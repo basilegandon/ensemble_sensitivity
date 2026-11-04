@@ -7,7 +7,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.message import Message
 from itertools import pairwise
 from typing import TYPE_CHECKING, ClassVar, Self, cast, override
@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from cartopy.mpl.geoaxes import GeoAxes
 
-from ensemble_sensitivity import visualization
+from ensemble_sensitivity import field_io, run_index, visualization
 from ensemble_sensitivity.data_retrieval import wcs_retrieval
 from ensemble_sensitivity.data_retrieval.wcs_retrieval import RetrievalError, RetrievalOptions
 
@@ -31,9 +31,10 @@ if TYPE_CHECKING:
 
 
 EXECUTED_AT = datetime(2026, 10, 4, 8, 5, 30, tzinfo=UTC)
+RUN_ID = "11111111-2222-4333-8444-555555555555"
 
 
-class FakeEccodes(visualization._ArrayEccodes):
+class FakeEccodes(field_io.ArrayEccodes):
     """Provide deterministic metadata and optional coordinate arrays."""
 
     def __init__(self, metadata: dict[str, int | float | str]) -> None:
@@ -644,6 +645,7 @@ def test_latest_complete_search_falls_back_and_writes_traceable_manifest(
 
     monkeypatch.setattr(wcs_retrieval, "_request_field", request_field)
     monkeypatch.setattr(wcs_retrieval, "_validate_grib", validate_grib)
+    monkeypatch.setattr(wcs_retrieval, "new_run_id", lambda: RUN_ID)
     run_dir = wcs_retrieval.retrieve_latest_complete_run(
         RetrievalOptions(
             target_lead_hours=0,
@@ -654,10 +656,21 @@ def test_latest_complete_search_falls_back_and_writes_traceable_manifest(
         )
     )
 
-    assert run_dir == tmp_path / "run_2026-10-04-08-05-Z_lead_time_0_step_24"
+    assert run_dir == tmp_path / RUN_ID
     raw_fetch = run_dir / "raw_fetch"
     manifest = json.loads((raw_fetch / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
+    assert manifest["run_id"] == RUN_ID
+    index = run_index.load_index(tmp_path)
+    assert list(index) == [RUN_ID]
+    assert index[RUN_ID]["directory"] == RUN_ID
+    assert index[RUN_ID]["created_at_utc"] == "2026-10-04T08:05:30+00:00"
+    parameters = cast("dict[str, object]", index[RUN_ID]["parameters"])
+    assert parameters["coverage_id"] == manifest["coverage_id"]
+    assert parameters["target_lead_hours"] == 0
+    assert parameters["time_step_hours"] == 24
+    assert parameters["required_leads_hours"] == [0]
+    assert parameters["initialization_utc"] == manifest["initialization_utc"]
     assert manifest["coverage_id"].endswith("2026-10-03T18.00.00Z")
     assert manifest["executed_at_utc"] == "2026-10-04T08:05:30+00:00"
     assert len(manifest["fields"]) == 2
@@ -740,9 +753,10 @@ def test_retrieval_refuses_to_overwrite_an_existing_run(
         lambda _token: _capabilities("2026-10-04T00.00.00Z"),
     )
     monkeypatch.setattr(wcs_retrieval, "_load_eccodes", lambda: FakeEccodes(_metadata()))
-    existing = tmp_path / "run_2026-10-04-08-05-Z_lead_time_0_step_24"
+    existing = tmp_path / RUN_ID
     existing.mkdir()
     (existing / "keep.txt").write_text("previous data", encoding="utf-8")
+    monkeypatch.setattr(wcs_retrieval, "new_run_id", lambda: RUN_ID)
 
     with pytest.raises(RetrievalError, match="already exists"):
         wcs_retrieval.retrieve_latest_complete_run(
@@ -758,13 +772,36 @@ def test_retrieval_refuses_to_overwrite_an_existing_run(
     assert (existing / "keep.txt").read_text(encoding="utf-8") == "previous data"
 
 
-def test_run_directory_name_uses_utc_minute_lead_and_step() -> None:
-    paris = timezone(timedelta(hours=2))
-
-    assert (
-        wcs_retrieval.run_directory_name(datetime(2026, 10, 30, 10, 59, 51, tzinfo=paris), 72, 6)
-        == "run_2026-10-30-08-59-Z_lead_time_72_step_6"
+def test_fetch_purges_index_entries_of_deleted_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "kept").mkdir()
+    run_index.register_run(tmp_path, "kept", {"a": 1})
+    (tmp_path / "gone").mkdir()
+    run_index.register_run(tmp_path, "gone", {"a": 2})
+    (tmp_path / "gone").rmdir()
+    monkeypatch.setattr(wcs_retrieval, "read_token", lambda _path: "secret-token")
+    monkeypatch.setattr(
+        wcs_retrieval,
+        "_get_capabilities",
+        lambda _token: _capabilities("2026-10-04T00.00.00Z"),
     )
+    monkeypatch.setattr(wcs_retrieval, "_load_eccodes", lambda: FakeEccodes(_metadata()))
+    monkeypatch.setattr(wcs_retrieval, "_request_field", Mock(side_effect=RetrievalError("x")))
+
+    with pytest.raises(RetrievalError):
+        wcs_retrieval.retrieve_latest_complete_run(
+            RetrievalOptions(
+                target_lead_hours=0,
+                step_hours=24,
+                output_dir=tmp_path,
+                env_file=tmp_path / ".env",
+                show_progress=False,
+            )
+        )
+
+    assert list(run_index.load_index(tmp_path)) == ["kept"]
 
 
 def test_visualization_requires_complete_run_manifest(tmp_path: Path) -> None:
@@ -791,12 +828,12 @@ def test_manifest_reader_rejects_invalid_manifest_shapes(
 ) -> None:
     (tmp_path / "manifest.json").write_text(contents, encoding="utf-8")
     with pytest.raises(RetrievalError, match=message):
-        visualization._read_manifest(tmp_path)
+        field_io.read_manifest(tmp_path)
 
 
 def test_manifest_reader_reports_missing_file(tmp_path: Path) -> None:
     with pytest.raises(RetrievalError, match="Cannot read retrieval manifest"):
-        visualization._read_manifest(tmp_path)
+        field_io.read_manifest(tmp_path)
 
 
 def test_quicklook_renders_one_field_and_writes_provenance(
@@ -838,7 +875,7 @@ def test_quicklook_renders_one_field_and_writes_provenance(
     )
     (tmp_path / "member_000_lead_000.grib").write_bytes(_valid_grib_message())
     monkeypatch.setattr(
-        visualization,
+        field_io,
         "_load_eccodes",
         lambda: FakeEccodes(_metadata()),
     )
@@ -858,10 +895,11 @@ def test_quicklook_renders_one_field_and_writes_provenance(
 
 
 def test_coordinates_are_validated_and_recentered_at_antimeridian() -> None:
-    values, longitudes, latitudes = visualization._decode_arrays(
+    values, longitudes, latitudes = field_io.decode_arrays(
         _valid_grib_message(),
         FakeEccodes(_metadata()),
     )
+    values, longitudes = field_io.recenter_longitudes(values, longitudes)
     assert values.shape == (721, 1440)
     assert longitudes[0] == pytest.approx(-180.0)
     assert longitudes[-1] == pytest.approx(179.75)
@@ -885,7 +923,7 @@ def test_coordinate_verification_rejects_misaligned_latitudes() -> None:
     message = _valid_grib_message()
     eccodes = MisalignedGridEccodes(_metadata())
     with pytest.raises(RetrievalError, match="latitude coordinates"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 @pytest.mark.parametrize(
@@ -905,7 +943,7 @@ def test_coordinate_validation_rejects_wrong_grid_dimensions(
     grib_message = _valid_grib_message()
     eccodes = FakeEccodes(metadata)
     with pytest.raises(RetrievalError, match=message):
-        visualization._decode_arrays(grib_message, eccodes)
+        field_io.decode_arrays(grib_message, eccodes)
 
 
 def test_coordinate_validation_rejects_nonfinite_values() -> None:
@@ -921,7 +959,7 @@ def test_coordinate_validation_rejects_nonfinite_values() -> None:
     message = _valid_grib_message()
     eccodes = NonfiniteEccodes(_metadata())
     with pytest.raises(RetrievalError, match="non-finite"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
@@ -937,7 +975,7 @@ def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
     message = _valid_grib_message()
     eccodes = MisalignedLongitudeEccodes(_metadata())
     with pytest.raises(RetrievalError, match="longitude coordinates"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
@@ -951,7 +989,7 @@ def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
     message = _valid_grib_message()
     eccodes = WrongSpacingEccodes(_metadata())
     with pytest.raises(RetrievalError, match="documented global"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:

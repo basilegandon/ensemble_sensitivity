@@ -15,6 +15,8 @@ from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
     RetrievalOptions,
     retrieve_latest_complete_run,
 )
+from ensemble_sensitivity.run_index import prune_index
+from ensemble_sensitivity.sensitivity.command import SensitivityRequest, run_sensitivity
 from ensemble_sensitivity.visualization import render_quicklooks
 
 if TYPE_CHECKING:
@@ -130,6 +132,7 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
         help="directory for batch maps (default: <run-dir>\\maps)",
     )
     plot_parser.add_argument("--output", type=Path)
+    _add_sensitivity_parser(subparsers, shared)
     namespace = parser.parse_args(args)
     if namespace.verbose and namespace.quiet:
         parser.error("argument -q/--quiet: not allowed with argument -v/--verbose")
@@ -162,55 +165,131 @@ def main(args: Sequence[str] | None = None) -> None:
         _dispatch(parsed_args)
 
 
-def _dispatch(parsed_args: argparse.Namespace) -> None:
-    """Run the selected command.
+def _prune_run_index(run_dir: Path) -> None:
+    """Purge index entries of the run's output root whose directory vanished."""
+    resolved = run_dir.resolve()
+    root = resolved.parent.parent if resolved.name == RAW_FETCH_DIRNAME else resolved.parent
+    prune_index(root)
+
+
+def _add_sensitivity_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    shared: argparse.ArgumentParser,
+) -> None:
+    """Declare the ``sensitivity`` subcommand."""
+    parser = subparsers.add_parser(
+        "sensitivity",
+        parents=[shared],
+        help="signed Pearson map between a target-zone mean and an earlier Z500 field",
+        description=(
+            "Correlate, over the 35 members, the area-weighted Z500 mean of a circular zone at "
+            "the target lead with Z500 at every grid point at an earlier lead."
+        ),
+    )
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--run-id", help="run UUID from runs_index.json (default: most recent)")
+    parser.add_argument("--target-lead", type=int, required=True, help="target lead in hours")
+    parser.add_argument(
+        "--predictor-lead",
+        type=int,
+        required=True,
+        help="earlier lead in hours, strictly below the target lead",
+    )
+    parser.add_argument("--lat", type=float, required=True, help="zone centre latitude")
+    parser.add_argument("--lon", type=float, required=True, help="zone centre longitude")
+    parser.add_argument("--radius-km", type=float, required=True, help="zone radius in km")
+
+
+def _run_sensitivity(parsed_args: argparse.Namespace) -> None:
+    """Run the ``sensitivity`` command.
 
     Raises:
-        SystemExit: If a requested retrieval or visualization stage fails.
+        SystemExit: If the computation or rendering fails.
 
     """
-    if parsed_args.command == "fetch":
-        try:
-            run_dir = retrieve_latest_complete_run(
-                RetrievalOptions(
-                    target_lead_hours=parsed_args.lead_time,
-                    step_hours=parsed_args.step,
-                    output_dir=parsed_args.output_dir,
-                    env_file=parsed_args.env_file,
-                    coverage_id=parsed_args.coverage_id,
-                    show_progress=not parsed_args.quiet,
-                )
+    try:
+        run_sensitivity(
+            SensitivityRequest(
+                output_root=parsed_args.output_dir,
+                run_id=parsed_args.run_id,
+                target_lead_hours=parsed_args.target_lead,
+                predictor_lead_hours=parsed_args.predictor_lead,
+                center_latitude=parsed_args.lat,
+                center_longitude=parsed_args.lon,
+                radius_km=parsed_args.radius_km,
             )
-        except (OSError, RetrievalError, ValueError) as error:
-            logger.error(  # ruff: ignore[error-instead-of-exception]
-                "Unable to retrieve a complete PEARP run: %s",
-                error,
-                exc_info=parsed_args.verbose,
-            )
-            raise SystemExit(1) from None
-        logger.info("Raw GRIB fields saved to %s", (run_dir / RAW_FETCH_DIRNAME).resolve())
-        return
+        )
+    except (OSError, RetrievalError, ValueError) as error:
+        logger.error(  # ruff: ignore[error-instead-of-exception]
+            "Unable to compute the sensitivity map: %s",
+            error,
+            exc_info=parsed_args.verbose,
+        )
+        raise SystemExit(1) from None
 
-    if parsed_args.command == "plot":
-        try:
-            output_paths = render_quicklooks(
-                parsed_args.run_dir,
-                lead_hours=parsed_args.lead_hours,
-                members=parsed_args.members,
+
+def _run_fetch(parsed_args: argparse.Namespace) -> None:
+    """Run the ``fetch`` command.
+
+    Raises:
+        SystemExit: If the retrieval fails.
+
+    """
+    try:
+        run_dir = retrieve_latest_complete_run(
+            RetrievalOptions(
+                target_lead_hours=parsed_args.lead_time,
+                step_hours=parsed_args.step,
                 output_dir=parsed_args.output_dir,
-                output_path=parsed_args.output,
+                env_file=parsed_args.env_file,
+                coverage_id=parsed_args.coverage_id,
                 show_progress=not parsed_args.quiet,
             )
-        except (OSError, RetrievalError, ValueError) as error:
-            logger.error(  # ruff: ignore[error-instead-of-exception]
-                "Unable to render PEARP quicklook: %s",
-                error,
-                exc_info=parsed_args.verbose,
-            )
-            raise SystemExit(1) from None
-        logger.info("Saved %d quicklook map(s)", len(output_paths))
-        return
+        )
+    except (OSError, RetrievalError, ValueError) as error:
+        logger.error(  # ruff: ignore[error-instead-of-exception]
+            "Unable to retrieve a complete PEARP run: %s",
+            error,
+            exc_info=parsed_args.verbose,
+        )
+        raise SystemExit(1) from None
+    logger.info("Raw GRIB fields saved to %s", (run_dir / RAW_FETCH_DIRNAME).resolve())
 
+
+def _run_plot(parsed_args: argparse.Namespace) -> None:
+    """Run the ``plot`` command.
+
+    Raises:
+        SystemExit: If the rendering fails.
+
+    """
+    try:
+        _prune_run_index(parsed_args.run_dir)
+        output_paths = render_quicklooks(
+            parsed_args.run_dir,
+            lead_hours=parsed_args.lead_hours,
+            members=parsed_args.members,
+            output_dir=parsed_args.output_dir,
+            output_path=parsed_args.output,
+            show_progress=not parsed_args.quiet,
+        )
+    except (OSError, RetrievalError, ValueError) as error:
+        logger.error(  # ruff: ignore[error-instead-of-exception]
+            "Unable to render PEARP quicklook: %s",
+            error,
+            exc_info=parsed_args.verbose,
+        )
+        raise SystemExit(1) from None
+    logger.info("Saved %d quicklook map(s)", len(output_paths))
+
+
+def _dispatch(parsed_args: argparse.Namespace) -> None:
+    """Run the selected command."""
+    handlers = {"fetch": _run_fetch, "plot": _run_plot, "sensitivity": _run_sensitivity}
+    handler = handlers.get(parsed_args.command)
+    if handler is not None:
+        handler(parsed_args)
+        return
     logger.info("Hello from ensemble-sensitivity!")
     logger.debug("Debugging is enabled.")
 

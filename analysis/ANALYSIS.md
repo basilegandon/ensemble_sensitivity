@@ -23,6 +23,18 @@ ouvertes.
 - Significativité : aucun test dans la première phase.
 - Usage : exploration locale, sans usage opérationnel.
 
+## État d’implémentation
+
+Implémenté et testé (données synthétiques) : zone circulaire, moyenne pondérée
+cos(latitude), cible par membre, corrélation de Pearson signée sur les membres,
+avec mémoire bornée (un champ à la fois). La commande `sensitivity` génère
+une carte PNG (colormap divergente, zone tracée) et son JSON sous `<uuid>/maps`.
+Non implémenté : application interactive, précalcul, significativité.
+
+Choix de conception : rayon limité à ]0, π·R] km (R = 6371,0088 km) ; mailles
+du pôle pondérées par cos(±90°) ≈ 0 ; une maille hors de la zone n’est jamais
+lue pour la cible, donc une valeur non finie y est ignorée.
+
 ## Questions ouvertes
 
 - Comment précalculer les cartes pour garder une interaction fluide, et quel

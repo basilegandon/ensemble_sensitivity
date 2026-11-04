@@ -7,6 +7,8 @@ sensibilité.
 - `wcs_retrieval.py` découvre les runs candidats, récupère les champs Z500,
   vérifie leurs métadonnées et enregistre les champs ainsi que le manifeste.
 - Le point d’entrée de la commande est dans `../main.py`.
+- `../run_index.py` gère l’index global des runs (UUID, dossier, paramètres,
+  purge des dossiers disparus).
 - Les cartes de contrôle et leurs métadonnées sont produites par
   `../visualization.py`.
 

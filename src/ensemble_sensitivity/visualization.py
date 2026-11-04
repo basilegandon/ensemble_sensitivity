@@ -10,8 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import product
-from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, cast
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -20,16 +19,20 @@ import numpy as np
 from tqdm import tqdm
 
 from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
-    MAX_RESPONSE_BYTES,
     RAW_FETCH_DIRNAME,
     RetrievalError,
-    _Eccodes,
-    _load_eccodes,
-    _validate_grib,
+)
+from ensemble_sensitivity.field_io import (
+    find_field,
+    load_field,
+    manifest_initialization,
+    read_manifest,
+    recenter_longitudes,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from cartopy.mpl.geoaxes import GeoAxes
     from numpy.typing import NDArray
@@ -55,207 +58,6 @@ class _QuicklookContext:
     latitude_axis: NDArray[np.float64]
 
 
-class _ArrayEccodes(_Eccodes, Protocol):
-    """ecCodes array access required to decode a field for plotting."""
-
-    def codes_get_array(self, handle: object, key: str) -> object:
-        """Read a GRIB array key."""
-
-
-def _read_manifest(run_dir: Path) -> dict[str, object]:
-    """Read and validate the required complete-run manifest.
-
-    Returns:
-        Complete-run metadata and field inventory.
-
-    Raises:
-        RetrievalError: If the manifest is missing, malformed, or incomplete.
-
-    """
-    manifest_path = run_dir / "manifest.json"
-    try:
-        value = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RetrievalError(f"Cannot read retrieval manifest {manifest_path}: {error}") from error
-    if not isinstance(value, dict):
-        raise RetrievalError(f"Retrieval manifest is not a JSON object: {manifest_path}")
-    manifest = cast("dict[str, object]", value)
-    if manifest.get("status") != "complete":
-        raise RetrievalError(f"Retrieval manifest is not complete: {manifest_path}")
-    if not isinstance(manifest.get("fields"), list):
-        raise RetrievalError(f"Retrieval manifest has no field inventory: {manifest_path}")
-    return manifest
-
-
-def _find_field(
-    manifest: dict[str, object],
-    *,
-    member: int,
-    lead_hours: int,
-) -> dict[str, object]:
-    """Find the requested validated field in a complete manifest.
-
-    Returns:
-        Field provenance record.
-
-    Raises:
-        RetrievalError: If the complete manifest does not contain the field.
-
-    """
-    fields = manifest["fields"]
-    if not isinstance(fields, list):
-        raise RetrievalError("Retrieval manifest has no field inventory")
-    for value in fields:
-        if _field_matches(value, member=member, lead_hours=lead_hours):
-            return cast("dict[str, object]", value)
-    raise RetrievalError(
-        f"Complete run manifest has no validated member {member:03}, lead {lead_hours} h"
-    )
-
-
-def _field_matches(value: object, *, member: int, lead_hours: int) -> bool:
-    """Return whether a manifest entry identifies the requested field.
-
-    Returns:
-        Whether the entry matches the requested member and lead.
-
-    """
-    return (
-        isinstance(value, dict)
-        and value.get("member") == member
-        and value.get("lead_hours") == lead_hours
-    )
-
-
-def _validate_grid_dimensions(ni: object, nj: object) -> tuple[int, int]:
-    """Validate and return the documented global grid dimensions.
-
-    Returns:
-        The validated longitude and latitude dimensions.
-
-    Raises:
-        RetrievalError: If the dimensions do not match the global grid.
-
-    """
-    if not isinstance(ni, int) or not isinstance(nj, int) or (ni, nj) != (1440, 721):
-        raise RetrievalError(f"Unexpected Z500 grid dimensions: {ni} x {nj}")
-    return ni, nj
-
-
-def _validate_coordinate_axes(
-    longitudes: NDArray[np.float64],
-    latitudes: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Validate regular global-grid coordinates and return their axes.
-
-    Returns:
-        The longitude and latitude axes.
-
-    Raises:
-        RetrievalError: If coordinates are not on the documented global grid.
-
-    """
-    longitude_axis = longitudes[0, :]
-    latitude_axis = latitudes[:, 0]
-    if not np.allclose(longitudes, longitude_axis[None, :], atol=1e-5, rtol=0):
-        raise RetrievalError("Z500 longitude coordinates are not a regular lat/lon grid")
-    if not np.allclose(latitudes, latitude_axis[:, None], atol=1e-5, rtol=0):
-        raise RetrievalError("Z500 latitude coordinates are not a regular lat/lon grid")
-    _validate_axis_endpoints(longitude_axis, latitude_axis)
-    _validate_axis_spacing(longitude_axis, latitude_axis)
-    return longitude_axis, latitude_axis
-
-
-def _validate_axis_endpoints(
-    longitude_axis: NDArray[np.float64],
-    latitude_axis: NDArray[np.float64],
-) -> None:
-    """Check that the global coordinate axes span the expected endpoints.
-
-    Raises:
-        RetrievalError: If either axis has unexpected endpoints.
-
-    """
-    if not np.allclose(longitude_axis[[0, -1]], [0.0, 359.75], atol=1e-5, rtol=0):
-        raise RetrievalError("Z500 longitude axis does not span the documented global grid")
-    if not np.allclose(latitude_axis[[0, -1]], [90.0, -90.0], atol=1e-5, rtol=0):
-        raise RetrievalError("Z500 latitude axis does not span the documented global grid")
-
-
-def _validate_axis_spacing(
-    longitude_axis: NDArray[np.float64],
-    latitude_axis: NDArray[np.float64],
-) -> None:
-    """Check that adjacent global-grid coordinates are spaced by 0.25 degrees.
-
-    Raises:
-        RetrievalError: If either axis has unexpected spacing.
-
-    """
-    if not np.allclose(np.diff(longitude_axis), 0.25, atol=1e-5, rtol=0):
-        raise RetrievalError("Z500 longitude axis does not use 0.25-degree spacing")
-    if not np.allclose(np.diff(latitude_axis), -0.25, atol=1e-5, rtol=0):
-        raise RetrievalError("Z500 latitude axis does not use 0.25-degree spacing")
-
-
-def _decode_arrays(
-    body: bytes, eccodes: _ArrayEccodes
-) -> tuple[
-    NDArray[np.float32],
-    NDArray[np.float64],
-    NDArray[np.float64],
-]:
-    """Decode one field and check its documented global grid coordinates.
-
-    Returns:
-        Field values, longitudes, and latitudes in grid order.
-
-    Raises:
-        RetrievalError: If the grid is unexpected or values are non-finite.
-
-    """
-    handle = eccodes.codes_new_from_message(body)
-    try:
-        ni, nj = _validate_grid_dimensions(
-            eccodes.codes_get(handle, "Ni"),
-            eccodes.codes_get(handle, "Nj"),
-        )
-        values = np.asarray(eccodes.codes_get_array(handle, "values"), dtype=np.float32).reshape(
-            (nj, ni)
-        )
-        latitudes = np.asarray(
-            eccodes.codes_get_array(handle, "latitudes"), dtype=np.float64
-        ).reshape((nj, ni))
-        longitudes = np.asarray(
-            eccodes.codes_get_array(handle, "longitudes"), dtype=np.float64
-        ).reshape((nj, ni))
-        if not np.isfinite(values).all():
-            raise RetrievalError("Z500 field contains non-finite values")
-        longitude_axis, latitude_axis = _validate_coordinate_axes(longitudes, latitudes)
-        values, longitude_axis = _recenter_longitudes(values, longitude_axis)
-        return values, longitude_axis, latitude_axis
-    finally:
-        eccodes.codes_release(handle)
-
-
-def _recenter_longitudes(
-    values: NDArray[np.float32],
-    longitude_axis: NDArray[np.float64],
-) -> tuple[NDArray[np.float32], NDArray[np.float64]]:
-    """Reorder field columns and longitude axis around the central meridian.
-
-    Returns:
-        Reordered field values and matching longitude coordinates.
-
-    """
-    half_width = len(longitude_axis) // 2
-    values = np.roll(values, shift=-half_width, axis=1)
-    longitude_axis = np.concatenate(
-        (longitude_axis[half_width:] - 360.0, longitude_axis[:half_width])
-    )
-    return values, longitude_axis
-
-
 def _load_quicklook_context(
     run_dir: Path,
     *,
@@ -269,20 +71,10 @@ def _load_quicklook_context(
         Quicklook data and provenance ready for rendering.
 
     """
-    manifest = _read_manifest(run_dir)
-    field_record = _find_field(manifest, member=member, lead_hours=lead_hours)
-    field_path = _manifest_field_path(run_dir, field_record)
-    body = _read_field_body(field_path)
-    initialization = _manifest_initialization(manifest)
-    eccodes = _load_eccodes()
-    metadata = _validate_grib(
-        body,
-        eccodes,
-        member=member,
-        lead_hours=lead_hours,
-        initialization=initialization.astimezone(UTC),
-    )
-    values, longitude_axis, latitude_axis = _decode_arrays(body, cast("_ArrayEccodes", eccodes))
+    manifest = read_manifest(run_dir)
+    decoded = load_field(run_dir, manifest, member=member, lead_hours=lead_hours)
+    initialization = manifest_initialization(manifest)
+    values, longitude_axis = recenter_longitudes(decoded.values, decoded.longitude_axis)
     output_path = _quicklook_output_path(run_dir, member, lead_hours, output_path)
     return _QuicklookContext(
         run_dir=run_dir,
@@ -291,69 +83,11 @@ def _load_quicklook_context(
         initialization=initialization,
         member=member,
         lead_hours=lead_hours,
-        metadata=metadata,
+        metadata=decoded.metadata,
         values=values,
         longitude_axis=longitude_axis,
-        latitude_axis=latitude_axis,
+        latitude_axis=decoded.latitude_axis,
     )
-
-
-def _manifest_field_path(run_dir: Path, field_record: dict[str, object]) -> Path:
-    """Resolve a safe field filename from a manifest entry.
-
-    Returns:
-        The field path contained by the run directory.
-
-    Raises:
-        RetrievalError: If the manifest filename is invalid or escapes the run directory.
-
-    """
-    relative_path = field_record.get("relative_path")
-    if not isinstance(relative_path, str) or Path(relative_path).name != relative_path:
-        raise RetrievalError("Manifest field path must be a local filename")
-    field_path = run_dir / relative_path
-    if field_path.resolve().parent != run_dir.resolve():
-        raise RetrievalError(f"Manifest field path escapes its run directory: {relative_path}")
-    return field_path
-
-
-def _read_field_body(field_path: Path) -> bytes:
-    """Read one bounded GRIB field from disk.
-
-    Returns:
-        The GRIB message bytes.
-
-    Raises:
-        RetrievalError: If the field exceeds the response size limit.
-
-    """
-    body = field_path.read_bytes()
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise RetrievalError(f"Selected field exceeds {MAX_RESPONSE_BYTES} bytes: {field_path}")
-    return body
-
-
-def _manifest_initialization(manifest: dict[str, object]) -> datetime:
-    """Parse the timezone-aware run initialization from a manifest.
-
-    Returns:
-        The validated run initialization.
-
-    Raises:
-        RetrievalError: If the timestamp is absent, invalid, or timezone-naive.
-
-    """
-    value = manifest.get("initialization_utc")
-    if not isinstance(value, str):
-        raise RetrievalError("Retrieval manifest has no initialization timestamp")
-    try:
-        initialization = datetime.fromisoformat(value)
-    except ValueError as error:
-        message = "Retrieval manifest has an invalid initialization timestamp"
-        raise RetrievalError(message) from error
-    if initialization.tzinfo is None:
-        raise RetrievalError("Retrieval initialization timestamp must include a timezone")
-    return initialization
 
 
 def _quicklook_output_path(
@@ -634,6 +368,7 @@ def _write_provenance(context: _QuicklookContext) -> None:
     maximum = float(np.max(context.values))
     sidecar = {
         "created_utc": datetime.now(UTC).isoformat(),
+        "run_id": context.manifest.get("run_id"),
         "source_manifest": str((context.run_dir / "manifest.json").resolve()),
         "coverage_id": context.manifest.get("coverage_id"),
         "initialization_utc": context.initialization.isoformat(),
@@ -717,7 +452,7 @@ def _resolve_quicklook_jobs(
         Validated (lead, member) pairs in output order.
 
     """
-    manifest = _read_manifest(run_dir)
+    manifest = read_manifest(run_dir)
     available_members, available_leads = _available_selections(manifest)
     selected_members = _selected_members(members)
     _check_available_members(selected_members, available_members)
@@ -787,7 +522,7 @@ def _validate_requested_fields(
 ) -> None:
     """Ensure every requested lead/member pair is present in the manifest."""
     for lead, member in jobs:
-        _find_field(manifest, member=member, lead_hours=lead)
+        find_field(manifest, member=member, lead_hours=lead)
 
 
 def _check_available_members(
