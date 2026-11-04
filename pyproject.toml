@@ -127,6 +127,13 @@ preview = true
     "f-string-in-exception",
     "raise-vanilla-args",
 ]
+# Field loading errors include the selected manifest/field context.
+"src/ensemble_sensitivity/field_io.py" = [
+    "error-instead-of-exception",
+    "f-string-in-exception",
+    "raw-string-in-exception",
+    "raise-vanilla-args",
+]
 # Visualization errors include the selected manifest/field context.
 "src/ensemble_sensitivity/visualization.py" = [
     "error-instead-of-exception",

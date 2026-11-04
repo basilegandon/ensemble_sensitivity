@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from cartopy.mpl.geoaxes import GeoAxes
 
-from ensemble_sensitivity import run_index, visualization
+from ensemble_sensitivity import field_io, run_index, visualization
 from ensemble_sensitivity.data_retrieval import wcs_retrieval
 from ensemble_sensitivity.data_retrieval.wcs_retrieval import RetrievalError, RetrievalOptions
 
@@ -34,7 +34,7 @@ EXECUTED_AT = datetime(2026, 10, 4, 8, 5, 30, tzinfo=UTC)
 RUN_ID = "11111111-2222-4333-8444-555555555555"
 
 
-class FakeEccodes(visualization._ArrayEccodes):
+class FakeEccodes(field_io.ArrayEccodes):
     """Provide deterministic metadata and optional coordinate arrays."""
 
     def __init__(self, metadata: dict[str, int | float | str]) -> None:
@@ -828,12 +828,12 @@ def test_manifest_reader_rejects_invalid_manifest_shapes(
 ) -> None:
     (tmp_path / "manifest.json").write_text(contents, encoding="utf-8")
     with pytest.raises(RetrievalError, match=message):
-        visualization._read_manifest(tmp_path)
+        field_io.read_manifest(tmp_path)
 
 
 def test_manifest_reader_reports_missing_file(tmp_path: Path) -> None:
     with pytest.raises(RetrievalError, match="Cannot read retrieval manifest"):
-        visualization._read_manifest(tmp_path)
+        field_io.read_manifest(tmp_path)
 
 
 def test_quicklook_renders_one_field_and_writes_provenance(
@@ -875,7 +875,7 @@ def test_quicklook_renders_one_field_and_writes_provenance(
     )
     (tmp_path / "member_000_lead_000.grib").write_bytes(_valid_grib_message())
     monkeypatch.setattr(
-        visualization,
+        field_io,
         "_load_eccodes",
         lambda: FakeEccodes(_metadata()),
     )
@@ -895,10 +895,11 @@ def test_quicklook_renders_one_field_and_writes_provenance(
 
 
 def test_coordinates_are_validated_and_recentered_at_antimeridian() -> None:
-    values, longitudes, latitudes = visualization._decode_arrays(
+    values, longitudes, latitudes = field_io.decode_arrays(
         _valid_grib_message(),
         FakeEccodes(_metadata()),
     )
+    values, longitudes = visualization._recenter_longitudes(values, longitudes)
     assert values.shape == (721, 1440)
     assert longitudes[0] == pytest.approx(-180.0)
     assert longitudes[-1] == pytest.approx(179.75)
@@ -922,7 +923,7 @@ def test_coordinate_verification_rejects_misaligned_latitudes() -> None:
     message = _valid_grib_message()
     eccodes = MisalignedGridEccodes(_metadata())
     with pytest.raises(RetrievalError, match="latitude coordinates"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 @pytest.mark.parametrize(
@@ -942,7 +943,7 @@ def test_coordinate_validation_rejects_wrong_grid_dimensions(
     grib_message = _valid_grib_message()
     eccodes = FakeEccodes(metadata)
     with pytest.raises(RetrievalError, match=message):
-        visualization._decode_arrays(grib_message, eccodes)
+        field_io.decode_arrays(grib_message, eccodes)
 
 
 def test_coordinate_validation_rejects_nonfinite_values() -> None:
@@ -958,7 +959,7 @@ def test_coordinate_validation_rejects_nonfinite_values() -> None:
     message = _valid_grib_message()
     eccodes = NonfiniteEccodes(_metadata())
     with pytest.raises(RetrievalError, match="non-finite"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
@@ -974,7 +975,7 @@ def test_coordinate_validation_rejects_nonregular_longitudes() -> None:
     message = _valid_grib_message()
     eccodes = MisalignedLongitudeEccodes(_metadata())
     with pytest.raises(RetrievalError, match="longitude coordinates"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
@@ -988,7 +989,7 @@ def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
     message = _valid_grib_message()
     eccodes = WrongSpacingEccodes(_metadata())
     with pytest.raises(RetrievalError, match="documented global"):
-        visualization._decode_arrays(message, eccodes)
+        field_io.decode_arrays(message, eccodes)
 
 
 def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:
