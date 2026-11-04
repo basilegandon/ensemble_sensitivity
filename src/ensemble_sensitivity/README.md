@@ -18,20 +18,24 @@ flowchart TB
         jeton --> capabilities["Interroger les capacités du service WCS"]
         capabilities --> candidats((Couvertures Z500 annoncées, de la plus récente à la plus ancienne))
         options_fetch --> echeances["Déterminer les échéances requises à partir de la cible et du pas"]
+        echeances --> purge["Purger de runs_index.json les entrées<br/>dont le dossier n'existe plus"]
+        purge --> uuid["Créer un UUID et le dossier output/uuid"]
         candidats --> reste{"Reste-t-il<br/>un candidat ?"}
-        echeances --> reste
+        uuid --> reste
         reste -->|oui| champs["Pour ce candidat, traiter chaque échéance<br/>et les membres 0 à 34"]
         reste -->|non| echec_fetch((Aucun run complet : RetrievalError))
         champs --> obtenir["Demander chaque champ au WCS"]
         obtenir --> valider["Valider chaque message GRIB : run, échéance, membre, Z500, niveau, unités et grille"]
         valider --> enregistrer["Enregistrer le champ et<br/>mettre à jour le manifeste"]
         enregistrer --> complet{"Tous les champs requis<br/>sont-ils valides ?"}
-        complet -->|oui| run_complet((Run complet : champs et manifest.json))
+        complet -->|oui| inscrire["Inscrire l'UUID, le dossier et les paramètres<br/>dans runs_index.json (écriture atomique)"]
+        inscrire --> run_complet((Run complet : output/uuid/raw_fetch<br/>champs et manifest.json))
         complet -->|non| reste
     end
 
     subgraph plot["Génération des cartes de contrôle — visualization.py"]
-        options_plot --> manifeste["Lire le manifeste et<br/>exiger un run complet"]
+        options_plot --> purge_plot["Purger l'index global<br/>(dossiers disparus)"]
+        purge_plot --> manifeste["Lire le manifeste et<br/>exiger un run complet"]
         manifeste --> selection["Valider les échéances et membres demandés,<br/>puis retrouver les champs"]
         selection --> lire["Lire et valider le champ GRIB sélectionné"]
         lire --> decoder["Décoder Z500 et vérifier les valeurs et la grille globale"]
@@ -61,10 +65,14 @@ flowchart TB
     run_complet -. étape distincte, non implémentée .-> note
 ```
 
-La commande `fetch` récupère les champs demandés dans un dossier d’exécution
-`output/run_<date>_lead_time_<échéance>_step_<pas>/raw_fetch` et ne renvoie un
-run que si tous les champs requis ont été validés ; sinon rien n’est conservé
-et il n’y a pas de reprise. Elle conserve la provenance dans son manifeste.
+La commande `fetch` récupère les champs demandés dans un dossier de run nommé par
+un UUID, `output/<uuid>/raw_fetch`, et ne renvoie un run que si tous les champs
+requis ont été validés ; sinon rien n’est conservé (ni dossier, ni entrée d’index)
+et il n’y a pas de reprise. Le fichier global `output/runs_index.json`, géré par
+`run_index.py`, référence chaque UUID, son dossier et ses paramètres ; à chaque
+lancement de `fetch` ou `plot`, les entrées dont le dossier n’existe plus sont
+purgées. Les cartes de `plot` vont par défaut dans `output/<uuid>/maps`.
+Elle conserve la provenance dans son manifeste (qui porte le `run_id`).
 La commande `plot` lit ce manifeste et les champs sélectionnés pour produire
 des cartes de contrôle individuelles ; elle ne calcule pas de carte de
 sensibilité. En cas d’erreur pendant `fetch` ou `plot`, `main()` la journalise

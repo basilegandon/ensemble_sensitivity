@@ -122,6 +122,11 @@ preview = true
     "raise-vanilla-args",
     "suspicious-url-open-usage",
 ]
+# Run index errors include the offending path or run ID.
+"src/ensemble_sensitivity/run_index.py" = [
+    "f-string-in-exception",
+    "raise-vanilla-args",
+]
 # Visualization errors include the selected manifest/field context.
 "src/ensemble_sensitivity/visualization.py" = [
     "error-instead-of-exception",

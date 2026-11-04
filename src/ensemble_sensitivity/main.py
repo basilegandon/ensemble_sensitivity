@@ -15,6 +15,7 @@ from ensemble_sensitivity.data_retrieval.wcs_retrieval import (
     RetrievalOptions,
     retrieve_latest_complete_run,
 )
+from ensemble_sensitivity.run_index import prune_index
 from ensemble_sensitivity.visualization import render_quicklooks
 
 if TYPE_CHECKING:
@@ -162,6 +163,13 @@ def main(args: Sequence[str] | None = None) -> None:
         _dispatch(parsed_args)
 
 
+def _prune_run_index(run_dir: Path) -> None:
+    """Purge index entries of the run's output root whose directory vanished."""
+    resolved = run_dir.resolve()
+    root = resolved.parent.parent if resolved.name == RAW_FETCH_DIRNAME else resolved.parent
+    prune_index(root)
+
+
 def _dispatch(parsed_args: argparse.Namespace) -> None:
     """Run the selected command.
 
@@ -193,6 +201,7 @@ def _dispatch(parsed_args: argparse.Namespace) -> None:
 
     if parsed_args.command == "plot":
         try:
+            _prune_run_index(parsed_args.run_dir)
             output_paths = render_quicklooks(
                 parsed_args.run_dir,
                 lead_hours=parsed_args.lead_hours,

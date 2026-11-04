@@ -25,6 +25,8 @@ from urllib.request import Request, urlopen
 from defusedxml import ElementTree
 from tqdm import tqdm
 
+from ensemble_sensitivity.run_index import new_run_id, prune_index, register_run
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from email.message import Message
@@ -142,6 +144,7 @@ class _CandidateRequest:
     eccodes: _Eccodes
     leads: tuple[int, ...]
     run_dir: Path
+    run_id: str
     target: int
     step: int
     executed_at: datetime
@@ -154,6 +157,7 @@ class _RunPlan:
 
     leads: tuple[int, ...]
     run_dir: Path
+    run_id: str
     executed_at: datetime
 
 
@@ -841,19 +845,6 @@ def _validate_grib_content(
         )
 
 
-def run_directory_name(executed_at: datetime, target_lead_hours: int, step_hours: int) -> str:
-    """Name the output directory of one execution.
-
-    Example: ``run_2026-10-30-09-59-Z_lead_time_24_step_24``.
-
-    Returns:
-        Directory name based on the UTC execution minute and the requested hours.
-
-    """
-    stamp = f"{executed_at.astimezone(UTC):%Y-%m-%d-%H-%M}-Z"
-    return f"run_{stamp}_lead_time_{target_lead_hours}_step_{step_hours}"
-
-
 def _write_manifest(run_dir: Path, manifest: Mapping[str, object]) -> None:
     """Atomically persist required run traceability."""
     path = run_dir / "manifest.json"
@@ -941,6 +932,7 @@ def _manifest(candidate: _CandidateRequest, records: list[FieldRecord]) -> dict[
 
     """
     return {
+        "run_id": candidate.run_id,
         "coverage_id": candidate.coverage_id,
         "initialization_utc": candidate.initialization.isoformat(),
         "executed_at_utc": candidate.executed_at.astimezone(UTC).isoformat(),
@@ -980,9 +972,10 @@ def _run_candidate(candidate: _CandidateRequest) -> Path:
 def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
     """Retrieve the newest advertised run complete for every required field.
 
-    The run is written to ``<output_dir>/run_<execution time>_lead_time_<lead>_step_<step>``;
-    its ``raw_fetch`` subdirectory holds the validated GRIB files and ``manifest.json``.
-    Nothing is left on disk when no candidate run is complete.
+    The run is written to ``<output_dir>/<run UUID>``; its ``raw_fetch`` subdirectory holds
+    the validated GRIB files and ``manifest.json``. The run is then registered in
+    ``<output_dir>/runs_index.json``, after entries whose directory vanished are purged.
+    Nothing is left on disk or in the index when no candidate run is complete.
 
     Returns:
         The run directory containing ``raw_fetch``.
@@ -995,9 +988,12 @@ def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
     token = read_token(options.env_file)
     eccodes = _load_eccodes()
     candidates = _candidate_runs(options, token)
+    prune_index(options.output_dir)
     plan = _create_run_plan(options, leads)
     try:
         raw_fetch_dir, failures = _try_candidate_runs(options, token, candidates, plan, eccodes)
+        if raw_fetch_dir is not None:
+            _register_run(options, plan, raw_fetch_dir)
     except BaseException:
         shutil.rmtree(plan.run_dir, ignore_errors=True)
         raise
@@ -1008,6 +1004,27 @@ def retrieve_latest_complete_run(options: RetrievalOptions) -> Path:
     return plan.run_dir
 
 
+def _register_run(options: RetrievalOptions, plan: _RunPlan, raw_fetch_dir: Path) -> None:
+    """Record the completed run and its parameters in the global index."""
+    manifest = json.loads((raw_fetch_dir / "manifest.json").read_text(encoding="utf-8"))
+    parameters = {
+        key: manifest[key]
+        for key in (
+            "coverage_id",
+            "initialization_utc",
+            "executed_at_utc",
+            "target_lead_hours",
+            "time_step_hours",
+            "required_leads_hours",
+            "variable",
+            "units",
+            "source",
+        )
+    }
+    parameters["member_count"] = len(manifest["members"])
+    register_run(options.output_dir, plan.run_id, parameters, plan.executed_at)
+
+
 def _create_run_plan(options: RetrievalOptions, leads: tuple[int, ...]) -> _RunPlan:
     """Create the execution-specific output directory.
 
@@ -1015,20 +1032,17 @@ def _create_run_plan(options: RetrievalOptions, leads: tuple[int, ...]) -> _RunP
         Required leads, new run directory, and execution time.
 
     Raises:
-        RetrievalError: If the directory for this execution minute already exists.
+        RetrievalError: If the UUID directory already exists.
 
     """
     executed_at = options.executed_at or datetime.now(UTC)
-    run_dir = options.output_dir / run_directory_name(
-        executed_at, options.target_lead_hours, options.step_hours
-    )
+    run_id = new_run_id()
+    run_dir = options.output_dir / run_id
     try:
         run_dir.mkdir(parents=True)
     except FileExistsError as error:
-        raise RetrievalError(
-            f"Output directory already exists; retry in a minute: {run_dir}"
-        ) from error
-    return _RunPlan(leads=leads, run_dir=run_dir, executed_at=executed_at)
+        raise RetrievalError(f"Output directory already exists: {run_dir}") from error
+    return _RunPlan(leads=leads, run_dir=run_dir, run_id=run_id, executed_at=executed_at)
 
 
 def _candidate_runs(
@@ -1108,6 +1122,7 @@ def _make_candidate_request(
         eccodes=eccodes,
         leads=plan.leads,
         run_dir=plan.run_dir,
+        run_id=plan.run_id,
         target=options.target_lead_hours,
         step=options.step_hours,
         executed_at=plan.executed_at,

@@ -634,6 +634,7 @@ def _write_provenance(context: _QuicklookContext) -> None:
     maximum = float(np.max(context.values))
     sidecar = {
         "created_utc": datetime.now(UTC).isoformat(),
+        "run_id": context.manifest.get("run_id"),
         "source_manifest": str((context.run_dir / "manifest.json").resolve()),
         "coverage_id": context.manifest.get("coverage_id"),
         "initialization_utc": context.initialization.isoformat(),
