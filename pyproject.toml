@@ -66,6 +66,10 @@ ignore = [
 preview = true
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/benchmark_precompute.py" = [
+    "docstring-missing-returns",
+    "ambiguous-unicode-character-string",
+]
 # Tests can reasonably contain things that would be undesirable in
 # production code.
 "tests/**/*.py" = [
