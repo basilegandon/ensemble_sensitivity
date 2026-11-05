@@ -8,9 +8,22 @@ une échéance antérieure.
 La première méthode retenue est une corrélation de Pearson, sans test de
 significativité. Le module de calcul pur est implémenté et testé (paquet
 `src/ensemble_sensitivity/sensitivity/`) ; la commande `sensitivity` produit les cartes PNG (triangle cible/prédicteur) et leur provenance ; le coût du précalcul est mesuré dans [`ANALYSIS.md`](ANALYSIS.md) ; l’application
-interactive et la significativité ne sont pas implémentées. Les choix déjà
+locale Panel + Bokeh (`ensemble-sensitivity app`) est implémentée ; la
+significativité et le précalcul ne le sont pas. Les choix déjà
 discutés et les questions qui restent ouvertes sont consignés dans
 [`ANALYSIS.md`](ANALYSIS.md).
+
+## Application locale
+
+Deux cartes liées (zoom et déplacement synchronisés) : à droite, moyenne
+d’ensemble en isolignes et écart-type en fond à l’échéance cible ; à gauche,
+corrélation de Pearson signée (RdBu_r, ±1) avec l’échéance prédicteur choisie.
+Un clic définit le centre de la zone ; le rayon (50 à 3000 km), le run
+(`runs_index.json`), la cible et le prédicteur se règlent par des sélecteurs.
+Le calcul se fait à la volée (`app/engine.py`, cache de 2 échéances ≈ 300 Mo) ;
+mention « Source : Météo-France ». Lancement :
+`uv run ensemble-sensitivity app [--run-id UUID] [--port 5006] [--no-browser]`
+(serveur lié à 127.0.0.1).
 
 ## Module de calcul
 

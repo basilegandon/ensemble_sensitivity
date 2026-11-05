@@ -130,7 +130,19 @@ DEBUG ; les bibliothèques tierces restent à INFO. La carte (`PNG`, colormap di
 mention « Source : Météo-France ») et son JSON de provenance sont écrits dans
 `output/<uuid>/maps/sensitivity_t<cible>_from_t<prédicteur>_lat…_lon…_r…km.*`.
 Les 35 membres et les deux échéances doivent figurer dans le run ; sinon la
-commande échoue avec un message explicite. Voir aussi le
+commande échoue avec un message explicite.
+
+Lancer l’application locale (Panel + Bokeh, deux cartes liées, calcul à la volée) :
+
+```powershell
+uv run ensemble-sensitivity app --run-id <uuid> --port 5006
+```
+
+`--run-id` est facultatif (run le plus récent) ; `--no-browser` n’ouvre pas le
+navigateur. Le serveur écoute uniquement sur 127.0.0.1. Un clic sur une carte
+définit le centre de la zone ; le rayon est borné à 50–3000 km. Les côtes
+nécessitent les données Natural Earth de cartopy (téléchargées une fois) ; sans
+elles, elles sont omises avec un avertissement. Voir aussi le
 [flux du code actuel](../src/ensemble_sensitivity/README.md).
 
 Le décodage GRIB utilise ecCodes ; l’installation de sa bibliothèque native

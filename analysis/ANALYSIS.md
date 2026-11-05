@@ -36,7 +36,11 @@ disponible précédente, jusqu’à épuisement (la plus ancienne n’est jamais
 cible). Le couple prédicteur = cible est exclu (corrélation triviale de 1).
 La cible par membre est calculée une fois par cible ; un seul champ est en
 mémoire à la fois ; une barre de progression `tqdm` suit les couples.
-Non implémenté : application interactive, précalcul, significativité.
+Application locale (`ensemble-sensitivity app`, Panel + Bokeh, option choisie
+par l’utilisateur) : `app/engine.py` (calcul à la volée, cache LRU de 2
+échéances), `app/model.py` (sélection validée, données des cartes, sans
+interface) et `app/view.py` (deux cartes liées, clic = centre de zone).
+Non implémenté : précalcul, survol (clic seul), significativité.
 
 Choix de conception : rayon limité à ]0, π·R] km (R = 6371,0088 km) ; mailles
 du pôle pondérées par cos(±90°) ≈ 0 ; une maille hors de la zone n’est jamais
@@ -114,11 +118,12 @@ doit mettre à jour une image (`imshow`/glyphe image) sans redessiner le fond.
 La cible peut encore être accélérée en limitant le masque à la bande de
 latitudes du cercle (non mesuré).
 
-## Options d’application locale (non implémentée)
+## Options d’application locale (comparaison ; Panel + Bokeh retenu et implémenté)
 
 Critères : deux cartes liées (zoom/pan synchronisés), curseur → recalcul
 < 100–200 ms, Python 3.14/uv, taille des dépendances. La disponibilité des
-roues Python 3.14 n’a pas été vérifiée pour ces paquets.
+roues Python 3.14 de Panel 1.10 et Bokeh 3.10 a été vérifiée
+(`uv pip install --dry-run`).
 
 | Option | Avantages | Inconvénients |
 |---|---|---|
@@ -129,11 +134,34 @@ roues Python 3.14 n’a pas été vérifiée pour ces paquets.
 
 Recommandation : **Panel + Bokeh** (équilibre latence, cartes liées,
 poids de dépendances, un seul processus Python), avec Qt + matplotlib en
-solution de repli si le fond de carte cartopy est prioritaire. **Décision
-attendue de l’utilisateur** ; rien n’est implémenté.
+solution de repli si le fond de carte cartopy est prioritaire. **Décision de
+l’utilisateur : Panel + Bokeh.**
+
+## Application Panel + Bokeh : mesures du moteur à la volée
+
+Données synthétiques (35 membres, grille 1440 × 721, i5-10310U, 7,7 Go ; aucun
+jeton ni donnée réelle). `SensitivityEngine` garde par échéance les anomalies
+centrées float32 (≈ 145 Mo), moyenne, écart-type et inverse des normes
+(≈ 160 Mo par échéance) ; cache de 2 échéances ≈ 300 Mo (cible ≈ 290 Mo).
+
+| Action | Mesure |
+|---|---|
+| Déplacement du centre ou du rayon (échéances en cache) | 0,087 à 0,101 s |
+| Moyenne et écart-type de la cible (en cache) | ≈ 10 µs |
+| Changement de prédicteur ou de cible (charge 35 champs, centrage) | ≈ 1,8 à 1,9 s, dont la génération aléatoire synthétique des champs |
+| Premier calcul (2 échéances à froid) | ≈ 3,1 s |
+| Pic d’allocations numpy (tracemalloc) | ≈ 368 Mo (transitoires de centrage inclus) |
+
+L’objectif d’interaction ≈ 0,1 s est atteint ; la RAM visée (≈ 290 Mo) est
+dépassée d’≈ 80 Mo en pic transitoire. L’affichage envoie des images
+sous-échantillonnées (pas de 0,5°) et des isolignes tracées avec contourpy,
+sans redessiner de fond cartopy.
 
 ## Questions ouvertes
 
+- Le survol (hover) ne définit pas encore le centre : seul le clic le fait.
+- Les côtes viennent de cartopy (110 m) ; sans données Natural Earth en cache
+  ni réseau, elles sont omises (avertissement).
 - Comment précalculer les cartes pour garder une interaction fluide, et quel
   volume de calcul et de stockage cela représente-t-il pour les centres, les
   rayons et les couples d’échéances possibles ?

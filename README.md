@@ -71,10 +71,13 @@ fur et à mesure qu’elles seront appuyées par des essais ou des données.
 ### Application
 
 - Quelle technologie permettra une application locale rapide et simple à
-  utiliser ? Dash est une piste, pas un choix arrêté.
+  utiliser ? Panel + Bokeh a été retenu et implémenté (`ensemble-sensitivity app`) ;
+  le survol (en plus du clic) pour définir le centre reste à décider.
 - Les calculs lourds seront-ils préparés à l’avance ou lancés dans un processus
-  séparé depuis l’application ?
+  séparé depuis l’application ? Aujourd’hui : calcul à la volée avec cache en
+  mémoire (voir `analysis/ANALYSIS.md`).
 - Quelles limites donner au rayon de la zone cible et quels réglages proposer ?
+  L’application borne le rayon à 50–3000 km (provisoire).
 
 ## 4. Première phase
 
@@ -89,7 +92,8 @@ n’est appliqué dans cette phase.
 
 La récupération de champs Z500, les cartes de contrôle par membre et le module
 de calcul (zone cible, moyenne pondérée, corrélation de Pearson) sont déjà
-disponibles. L’application interactive et la significativité restent à
+disponibles. L’application locale Panel + Bokeh (deux cartes liées, calcul à la
+volée) est implémentée ; la significativité reste à
 construire. Le choix de la source de données et la stratégie de précalcul
 dépendent de mesures comparables de volume et de temps.
 
