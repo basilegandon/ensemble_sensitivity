@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_LEAD_TIME_HOURS = 24
 DEFAULT_STEP_HOURS = 24
 DEFAULT_OUTPUT_DIR = Path("output")
+PACKAGE_LOGGER_NAME = "ensemble_sensitivity"
 
 
 def _verbosity_parser(*, default: bool | str) -> argparse.ArgumentParser:
@@ -143,15 +144,18 @@ def configure_logging(*, verbose: bool = False, quiet: bool = False) -> None:
     """Configure application logging.
 
     Args:
-        verbose: Whether to enable DEBUG-level logging.
+        verbose: Whether to enable DEBUG-level logging for this package only; third-party
+            loggers (matplotlib, cartopy, urllib3, PIL...) stay at INFO.
         quiet: Whether to log only errors.
 
     """
     level = logging.DEBUG if verbose else logging.ERROR if quiet else logging.INFO
+    root_level = max(level, logging.INFO)
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(root_level)
+    logging.getLogger(PACKAGE_LOGGER_NAME).setLevel(level)
     if not root_logger.handlers:
-        logging.basicConfig(level=level)
+        logging.basicConfig(level=root_level)
 
 
 def main(args: Sequence[str] | None = None) -> None:
@@ -243,7 +247,6 @@ def _run_fetch(parsed_args: argparse.Namespace) -> None:
                 output_dir=parsed_args.output_dir,
                 env_file=parsed_args.env_file,
                 coverage_id=parsed_args.coverage_id,
-                show_progress=not parsed_args.quiet,
             )
         )
     except (OSError, RetrievalError, ValueError) as error:
