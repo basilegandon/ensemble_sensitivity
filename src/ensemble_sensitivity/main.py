@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_LEAD_TIME_HOURS = 24
 DEFAULT_STEP_HOURS = 24
 DEFAULT_OUTPUT_DIR = Path("output")
+PACKAGE_LOGGER_NAME = "ensemble_sensitivity"
 
 
 def _verbosity_parser(*, default: bool | str) -> argparse.ArgumentParser:
@@ -133,6 +134,7 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
     )
     plot_parser.add_argument("--output", type=Path)
     _add_sensitivity_parser(subparsers, shared)
+    _add_app_parser(subparsers, shared)
     namespace = parser.parse_args(args)
     if namespace.verbose and namespace.quiet:
         parser.error("argument -q/--quiet: not allowed with argument -v/--verbose")
@@ -143,15 +145,18 @@ def configure_logging(*, verbose: bool = False, quiet: bool = False) -> None:
     """Configure application logging.
 
     Args:
-        verbose: Whether to enable DEBUG-level logging.
+        verbose: Whether to enable DEBUG-level logging for this package only; third-party
+            loggers (matplotlib, cartopy, urllib3, PIL...) stay at INFO.
         quiet: Whether to log only errors.
 
     """
     level = logging.DEBUG if verbose else logging.ERROR if quiet else logging.INFO
+    root_level = max(level, logging.INFO)
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(root_level)
+    logging.getLogger(PACKAGE_LOGGER_NAME).setLevel(level)
     if not root_logger.handlers:
-        logging.basicConfig(level=level)
+        logging.basicConfig(level=root_level)
 
 
 def main(args: Sequence[str] | None = None) -> None:
@@ -192,8 +197,11 @@ def _add_sensitivity_parser(
     parser.add_argument(
         "--predictor-lead",
         type=int,
-        required=True,
-        help="earlier lead in hours, strictly below the target lead",
+        help=(
+            "earlier lead in hours, strictly below the target lead; by default every "
+            "available lead up to the target is a target in turn, with all earlier leads "
+            "as predictors"
+        ),
     )
     parser.add_argument("--lat", type=float, required=True, help="zone centre latitude")
     parser.add_argument("--lon", type=float, required=True, help="zone centre longitude")
@@ -217,11 +225,57 @@ def _run_sensitivity(parsed_args: argparse.Namespace) -> None:
                 center_latitude=parsed_args.lat,
                 center_longitude=parsed_args.lon,
                 radius_km=parsed_args.radius_km,
+                show_progress=not parsed_args.quiet,
             )
         )
     except (OSError, RetrievalError, ValueError) as error:
         logger.error(  # ruff: ignore[error-instead-of-exception]
             "Unable to compute the sensitivity map: %s",
+            error,
+            exc_info=parsed_args.verbose,
+        )
+        raise SystemExit(1) from None
+
+
+def _add_app_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    shared: argparse.ArgumentParser,
+) -> None:
+    """Declare the ``app`` subcommand."""
+    parser = subparsers.add_parser(
+        "app",
+        parents=[shared],
+        help="local application: two linked maps (target mean/spread and Pearson correlation)",
+        description=(
+            "Serve a local Panel/Bokeh application on 127.0.0.1: click the target map to set "
+            "the zone centre, the correlation map is recomputed on the fly."
+        ),
+    )
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--run-id", help="run UUID from runs_index.json (default: most recent)")
+    parser.add_argument("--port", type=int, default=5006, help="local port (default: %(default)s)")
+    parser.add_argument("--no-browser", action="store_true", help="do not open the default browser")
+
+
+def _run_app(parsed_args: argparse.Namespace) -> None:
+    """Run the ``app`` command.
+
+    Raises:
+        SystemExit: If the run cannot be opened.
+
+    """
+    from ensemble_sensitivity.app.view import serve  # ruff: ignore[import-outside-top-level]
+
+    try:
+        serve(
+            parsed_args.output_dir,
+            parsed_args.run_id,
+            port=parsed_args.port,
+            show=not parsed_args.no_browser,
+        )
+    except (OSError, RetrievalError, ValueError) as error:
+        logger.error(  # ruff: ignore[error-instead-of-exception]
+            "Unable to start the application: %s",
             error,
             exc_info=parsed_args.verbose,
         )
@@ -285,7 +339,12 @@ def _run_plot(parsed_args: argparse.Namespace) -> None:
 
 def _dispatch(parsed_args: argparse.Namespace) -> None:
     """Run the selected command."""
-    handlers = {"fetch": _run_fetch, "plot": _run_plot, "sensitivity": _run_sensitivity}
+    handlers = {
+        "fetch": _run_fetch,
+        "plot": _run_plot,
+        "sensitivity": _run_sensitivity,
+        "app": _run_app,
+    }
     handler = handlers.get(parsed_args.command)
     if handler is not None:
         handler(parsed_args)

@@ -9,11 +9,13 @@ description = "Find the hotspot (high variability) in forecast ensemble to exhib
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "bokeh>=3.10",
     "cartopy>=0.26.0",
     "defusedxml>=0.7.1",
     "eccodes>=2.41",
     "matplotlib>=3.10",
     "numpy>=2.3",
+    "panel>=1.10",
     "polars>=1.44.2",
     "tqdm>=4.70.1",
 ]
@@ -66,6 +68,10 @@ ignore = [
 preview = true
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/benchmark_precompute.py" = [
+    "docstring-missing-returns",
+    "ambiguous-unicode-character-string",
+]
 # Tests can reasonably contain things that would be undesirable in
 # production code.
 "tests/**/*.py" = [
@@ -143,6 +149,16 @@ preview = true
     "float-equality-comparison",
     "too-many-arguments",
 ]
+"src/ensemble_sensitivity/app/*.py" = [
+    "f-string-in-exception",
+    "raw-string-in-exception",
+    "raise-vanilla-args",
+    "magic-value-comparison",
+    "float-equality-comparison",
+    "too-many-arguments",
+]
+# Panel and Bokeh expose a dynamic API, loaded without static types.
+"src/ensemble_sensitivity/app/view.py" = ["any-type"]
 # Visualization errors include the selected manifest/field context.
 "src/ensemble_sensitivity/visualization.py" = [
     "error-instead-of-exception",

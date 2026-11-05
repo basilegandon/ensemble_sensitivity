@@ -167,6 +167,7 @@ def _metadata(
         "Ni": 1440,
         "Nj": 721,
         "units": "m**2 s**-2",
+        **field_io.GRID_SCAN_SIGNATURE,
     }
 
 
@@ -990,6 +991,67 @@ def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
     eccodes = WrongSpacingEccodes(_metadata())
     with pytest.raises(RetrievalError, match="documented global"):
         field_io.decode_arrays(message, eccodes)
+
+
+def test_decode_values_matches_decode_arrays_without_reading_coordinates() -> None:
+    class CountingEccodes(FakeEccodes):
+        def __init__(self, metadata: dict[str, int | float | str]) -> None:
+            super().__init__(metadata)
+            self.array_keys: list[str] = []
+
+        @override
+        def codes_get_array(self, handle: object, key: str) -> object:
+            self.array_keys.append(key)
+            return super().codes_get_array(handle, key)
+
+    message = _valid_grib_message()
+    full_values, _, _ = field_io.decode_arrays(message, FakeEccodes(_metadata()))
+    eccodes = CountingEccodes(_metadata())
+    values = field_io.decode_values(message, eccodes)
+    np.testing.assert_array_equal(values, full_values)
+    assert eccodes.array_keys == ["values"]
+    assert eccodes.released
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("jScansPositively", 1),
+        ("iScansNegatively", 1),
+        ("latitudeOfFirstGridPointInDegrees", -90.0),
+        ("longitudeOfFirstGridPointInDegrees", 0.25),
+        ("iDirectionIncrementInDegrees", 0.5),
+    ],
+)
+def test_decode_values_rejects_shifted_or_reversed_grid(key: str, value: float) -> None:
+    metadata = _metadata()
+    metadata[key] = value
+    message = _valid_grib_message()
+    eccodes = FakeEccodes(metadata)
+    with pytest.raises(RetrievalError, match=key):
+        field_io.decode_values(message, eccodes)
+    assert eccodes.released
+
+
+def test_decode_values_rejects_wrong_dimensions_and_nonfinite_values() -> None:
+    metadata = _metadata()
+    metadata["Ni"] = 10
+    message = _valid_grib_message()
+    wrong_dims = FakeEccodes(metadata)
+    with pytest.raises(RetrievalError, match="grid dimensions"):
+        field_io.decode_values(message, wrong_dims)
+
+    class NonfiniteEccodes(FakeEccodes):
+        @override
+        def codes_get_array(self, handle: object, key: str) -> object:
+            del handle, key
+            values = np.full(1440 * 721, 54_000, dtype=np.float32)
+            values[5] = np.inf
+            return values
+
+    nonfinite = NonfiniteEccodes(_metadata())
+    with pytest.raises(RetrievalError, match="non-finite"):
+        field_io.decode_values(message, nonfinite)
 
 
 def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:

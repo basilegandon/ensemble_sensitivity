@@ -7,11 +7,15 @@ from __future__ import annotations
 import logging
 from importlib import import_module
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 
 from ensemble_sensitivity.main import configure_logging, main, parse_args
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 main_module = import_module("ensemble_sensitivity.main")
 
@@ -52,40 +56,24 @@ def test_parse_plot_args_supports_all_members_and_leads() -> None:
     assert args.members == "*"
 
 
-def test_configure_logging_verbose(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that verbose mode updates the root logger level and initializes logging once."""
-    calls: list[int] = []
-    levels: list[int] = []
+@pytest.fixture
+def restore_logging() -> Iterator[None]:
+    names = ("", "ensemble_sensitivity")
+    levels = {name: logging.getLogger(name).level for name in names}
+    yield
+    for name, level in levels.items():
+        logging.getLogger(name).setLevel(level)
 
-    class FakeLogger:
-        def __init__(self) -> None:
-            self.handlers: list[object] = []
-            self.manager = type("Manager", (), {"loggerDict": {}})()
 
-        @staticmethod
-        def setLevel(level: int) -> None:  # ruff: ignore[invalid-function-name]
-            levels.append(level)
-
-        def addHandler(self, handler: object) -> None:  # ruff: ignore[invalid-function-name]
-            self.handlers.append(handler)
-
-        def removeHandler(self, handler: object) -> None:  # ruff: ignore[invalid-function-name]
-            if handler in self.handlers:
-                self.handlers.remove(handler)
-
-    def fake_basic_config(*, level: int) -> None:
-        calls.append(level)
-
-    def fake_get_logger() -> FakeLogger:
-        return FakeLogger()
-
-    monkeypatch.setattr(logging, "getLogger", fake_get_logger)
-    monkeypatch.setattr(logging, "basicConfig", fake_basic_config)
-
+@pytest.mark.usefixtures("restore_logging")
+def test_verbose_logging_is_debug_for_the_package_only() -> None:
     configure_logging(verbose=True)
 
-    assert levels == [logging.DEBUG]
-    assert calls == [logging.DEBUG]
+    assert logging.getLogger("ensemble_sensitivity.main").isEnabledFor(logging.DEBUG)
+    for third_party in ("matplotlib", "cartopy", "urllib3", "PIL.PngImagePlugin"):
+        third_party_logger = logging.getLogger(third_party)
+        assert third_party_logger.getEffectiveLevel() == logging.INFO
+        assert not third_party_logger.isEnabledFor(logging.DEBUG)
 
 
 def test_main(caplog: pytest.LogCaptureFixture) -> None:
@@ -170,6 +158,7 @@ def test_quiet_plot_disables_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     assert render.call_args.kwargs["show_progress"] is True
 
 
+@pytest.mark.usefixtures("restore_logging")
 @pytest.mark.parametrize(
     ("verbose", "quiet", "expected"),
     [(False, False, logging.INFO), (True, False, logging.DEBUG), (False, True, logging.ERROR)],
@@ -177,7 +166,8 @@ def test_quiet_plot_disables_progress(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_configure_logging_levels(*, verbose: bool, quiet: bool, expected: int) -> None:
     configure_logging(verbose=verbose, quiet=quiet)
 
-    assert logging.getLogger().level == expected
+    assert logging.getLogger("ensemble_sensitivity").level == expected
+    assert logging.getLogger().level == max(expected, logging.INFO)
 
 
 def test_main_fetch_reports_retrieval_errors(

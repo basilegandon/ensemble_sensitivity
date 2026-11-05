@@ -13,7 +13,7 @@ flowchart TB
     commande -->|fetch| options_fetch((Options de récupération))
     commande -->|plot| options_plot((Dossier du run,<br/>échéances, membres et sortie))
     commande -->|sensitivity| options_sens((UUID du run, échéances cible et prédicteur,<br/>centre et rayon de la zone))
-
+        commande -->|app| options_app((UUID du run optionnel, port))
     subgraph fetch["Récupération des données — wcs_retrieval.py"]
         options_fetch --> jeton["Lire le jeton d'accès"]
         jeton --> capabilities["Interroger les capacités du service WCS"]
@@ -51,14 +51,25 @@ flowchart TB
 
     subgraph sens["Carte de sensibilité — sensitivity/"]
         options_sens --> purge_sens["Purger l'index puis retrouver le run<br/>(UUID ou plus récent)"]
-        purge_sens --> zone["zone.py : poids cos(latitude)<br/>dans le cercle, distance orthodromique"]
+        purge_sens --> plan["command.py : plan des couples (cible, prédicteur)<br/>triangle des échéances du manifeste, barre tqdm"]
+        plan --> zone["zone.py : poids cos(latitude)<br/>dans le cercle, distance orthodromique"]
         zone --> cible["statistics.py : moyenne pondérée<br/>par membre à l'échéance cible"]
         cible --> pearson["statistics.py : corrélation de Pearson signée<br/>avec Z500 à l'échéance antérieure, un champ à la fois"]
         pearson --> carte["render.py : carte divergente, zone tracée,<br/>« Source : Météo-France »"]
         carte --> sens_sorties((PNG et JSON de provenance<br/>dans output/uuid/maps))
+        carte -.->|couple suivant| plan
     end
 
     run_complet --> purge_sens
+
+    subgraph appli["Application locale — app/ (Panel + Bokeh)"]
+        options_app --> ouvrir["model.py : purger l'index, ouvrir le run,<br/>valider la sélection (échéances, centre, rayon)"]
+        ouvrir --> moteur["engine.py : cache LRU de 2 échéances,<br/>cible et corrélation à la volée"]
+        moteur --> vue["view.py : deux cartes liées,<br/>« Source : Météo-France »"]
+        vue -->|clic, sélecteurs, rayon| ouvrir
+    end
+
+    run_complet --> ouvrir
 
     subgraph commun["Services partagés"]
         reseau["Requêtes HTTPS avec limitation du débit<br/>et nouvelles tentatives"]
@@ -73,7 +84,7 @@ flowchart TB
     sorties --> resultats((Chemins des cartes produites))
     manifeste -. échec de lecture ou de validation .-> erreur
 
-    note["À venir : application interactive, précalcul, test de significativité."]
+    note["À venir : précalcul, test de significativité."]
     run_complet -. étape distincte, non implémentée .-> note
 ```
 
@@ -96,5 +107,13 @@ de Pearson signée : `field_io.py` (ingestion et décodage partagés avec `plot`
 `statistics.py` (moyenne pondérée, corrélation en flux, un champ à la fois),
 `compute.py` (orchestration), `render.py` (PNG et JSON de provenance) et
 `command.py` (résolution du run dans l’index). Elle écrit dans
-`output/<uuid>/maps`. Application interactive, précalcul et test de
-significativité n’existent pas encore.
+`output/<uuid>/maps`. Sans `--predictor-lead`, `command.py` planifie le triangle
+des couples (cible, prédicteur) sur les échéances du manifeste et affiche une
+barre `tqdm` ; la cible par membre est calculée une fois par cible. Avec `-v`,
+seul le paquet `ensemble_sensitivity` passe en DEBUG (tiers à INFO).
+
+La commande `app` (paquet `app/`) sert, sur 127.0.0.1, deux cartes liées :
+`engine.py` calcule à la volée (cache LRU de 2 échéances, ≈ 300 Mo), `model.py`
+valide la sélection et prépare les tableaux d’affichage, `view.py` relie
+Panel/Bokeh (clic = centre de zone). Précalcul et test de significativité
+n’existent pas encore.
