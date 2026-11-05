@@ -142,7 +142,11 @@ class AppView:
             "right",
         )
         self.right.add_layout(
-            bokeh_models.ColorBar(color_mapper=self.std_mapper, ticker=bokeh_models.BasicTicker()),
+            bokeh_models.ColorBar(
+                color_mapper=self.std_mapper,
+                ticker=bokeh_models.BasicTicker(),
+                title="écart-type (m² s⁻²)",
+            ),
             "right",
         )
 
@@ -281,7 +285,7 @@ class AppView:
         self.zone_source_left.data = dict(zone)
         selection = data.selection
         contours = (
-            f"contours {data.levels[0]:g} à {data.levels[-1]:g} m"
+            f"contours {data.levels[0]:g} à {data.levels[-1]:g} m² s⁻² (géopotentiel)"
             if data.levels
             else "sans contour"
         )

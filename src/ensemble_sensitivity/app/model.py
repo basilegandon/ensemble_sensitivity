@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
 import contourpy
@@ -54,6 +54,17 @@ class Selection:
     center_latitude: float
     center_longitude: float
     radius_km: float
+
+
+def _replaced(selection: Selection, **changes: float) -> Selection:
+    values = asdict(selection) | changes
+    return Selection(
+        int(values["target_lead_hours"]),
+        int(values["predictor_lead_hours"]),
+        float(values["center_latitude"]),
+        float(values["center_longitude"]),
+        float(values["radius_km"]),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,22 +271,33 @@ class AppModel:
         return {f"{str(runs[key]['created_at_utc'])[:16]} | {key[:8]}": key for key in ordered}
 
     def select_run(self, run_id: str | None) -> None:
-        """Switch to a run: reload its manifest and reset engine and selection."""
-        self.run_id, run_dir = resolve_run(self._output_root, run_id)
+        """Switch to a run: reload its manifest and reset engine and selection.
+
+        The new state is built aside and swapped in only once fully valid, so a refused
+        run leaves the previous run, selection and engine untouched.
+        """
+        resolved_id, run_dir = resolve_run(self._output_root, run_id)
         raw_dir = run_dir / RAW_FETCH_DIRNAME
         manifest = read_manifest(raw_dir)
-        self.leads = manifest_leads(manifest)
-        self.initialization = manifest_initialization(manifest)
-        self.selection = default_selection(self.leads)
+        leads = manifest_leads(manifest)
+        initialization = manifest_initialization(manifest)
+        selection = default_selection(leads)
         latitudes, longitudes = grid_axes()
-        self.display_longitudes, self.display_latitudes = display_axes(latitudes, longitudes)
-        self._engine = SensitivityEngine(
+        display_longitudes, display_latitudes = display_axes(latitudes, longitudes)
+        engine = SensitivityEngine(
             run_field_loader(raw_dir, manifest),
             latitudes,
             longitudes,
             MEMBERS,
             cache_leads=self._cache_leads,
         )
+        self.run_id = resolved_id
+        self.leads = leads
+        self.initialization = initialization
+        self.selection = selection
+        self.display_longitudes = display_longitudes
+        self.display_latitudes = display_latitudes
+        self._engine = engine
 
     def predictor_options(self, target_lead_hours: int) -> tuple[int, ...]:
         """List the leads strictly earlier than a target lead.
@@ -293,12 +315,14 @@ class AppModel:
             The new selection (also stored).
 
         """
-        candidate = replace(self.selection, **changes)
+        candidate = _replaced(self.selection, **changes)
         if "target_lead_hours" in changes and "predictor_lead_hours" not in changes:
             options = self.predictor_options(candidate.target_lead_hours)
             if candidate.predictor_lead_hours not in options and options:
-                candidate = replace(candidate, predictor_lead_hours=options[-1])
-        candidate = replace(candidate, center_longitude=wrap_longitude(candidate.center_longitude))
+                candidate = _replaced(candidate, predictor_lead_hours=options[-1])
+        candidate = _replaced(
+            candidate, center_longitude=wrap_longitude(candidate.center_longitude)
+        )
         validate_selection(candidate, self.leads)
         self.selection = candidate
         return candidate

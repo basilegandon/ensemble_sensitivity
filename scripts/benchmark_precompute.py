@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 MEMBERS = tuple(range(35))
 CENTER = (46.0, 2.0)
 RADII_KM = (250.0, 500.0, 1000.0, 2000.0)
+TABLE_RULE = "|---|---|"
 
 
 def _write(text: str = "") -> None:
@@ -121,7 +122,7 @@ def decode_cost(field: NDArray[np.float32]) -> None:
     tracemalloc.stop()
 
     _write("| Décodage d'un champ | temps (s) |")
-    _write("|---|---|")
+    _write(TABLE_RULE)
     _write(f"| `decode_arrays` (valeurs + lat/lon) | {full:.3f} |")
     _write(f"| `decode_values` (valeurs seules, chemin rapide) | {fast:.3f} |")
     peaks = f"{peak_full / 1e6:.0f} / {peak_fast / 1e6:.0f} Mo"
@@ -180,7 +181,7 @@ def compute_cost(fields: list[NDArray[np.float32]]) -> None:
     _write(f"| Produit matriciel, anomalies/normes en cache | {_timed(matvec_cached):.3f} | - |")
     _write()
     _write("| Cible par membre (35 champs, rayon) | temps (s) |")
-    _write("|---|---|")
+    _write(TABLE_RULE)
     for radius in RADII_KM:
         zone = circular_zone_weights(
             latitudes,
@@ -230,7 +231,7 @@ def storage_cost(fields: list[NDArray[np.float32]]) -> None:
         "int8 + zlib, grille 1° (1 point sur 4)": compressed(quantized[::4, ::4]),
     }
     _write("| Carte stockée (une carte) | taille (Ko) |")
-    _write("|---|---|")
+    _write(TABLE_RULE)
     for name, size in rows.items():
         _write(f"| {name} | {size / 1024:.0f} |")
     _write()

@@ -29,6 +29,17 @@ if TYPE_CHECKING:
 
 GRID_NI = 1440
 GRID_NJ = 721
+SCAN_TOLERANCE = 1e-5
+GRID_SCAN_SIGNATURE: dict[str, float] = {
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "longitudeOfFirstGridPointInDegrees": 0.0,
+    "longitudeOfLastGridPointInDegrees": 359.75,
+    "iDirectionIncrementInDegrees": 0.25,
+    "jDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jScansPositively": 0,
+}
 
 
 class ArrayEccodes(_Eccodes, Protocol):
@@ -277,6 +288,27 @@ def _validate_axis_spacing(
         raise RetrievalError("Z500 latitude axis does not use 0.25-degree spacing")
 
 
+def _validate_scan_signature(handle: object, eccodes: ArrayEccodes) -> None:
+    """Check the scalar grid definition (endpoints, increments, scanning order).
+
+    Cheap enough to run on every message, unlike the coordinate arrays.
+
+    Raises:
+        RetrievalError: If the grid definition differs from the documented global grid.
+
+    """
+    for key, expected in GRID_SCAN_SIGNATURE.items():
+        actual = eccodes.codes_get(handle, key)
+        if (
+            isinstance(actual, str)
+            or not np.isfinite(actual)
+            or abs(float(actual) - expected) > SCAN_TOLERANCE
+        ):
+            raise RetrievalError(
+                f"Unexpected Z500 grid definition: {key}={actual!r}, expected {expected}"
+            )
+
+
 def _decode_values(handle: object, eccodes: ArrayEccodes) -> NDArray[np.float32]:
     """Decode the data values of an open message and check they are finite.
 
@@ -291,6 +323,7 @@ def _decode_values(handle: object, eccodes: ArrayEccodes) -> NDArray[np.float32]
         eccodes.codes_get(handle, "Ni"),
         eccodes.codes_get(handle, "Nj"),
     )
+    _validate_scan_signature(handle, eccodes)
     values = np.asarray(eccodes.codes_get_array(handle, "values"), dtype=np.float32).reshape(
         (nj, ni)
     )

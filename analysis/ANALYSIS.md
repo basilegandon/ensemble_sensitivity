@@ -71,7 +71,8 @@ Optimisation faite : les axes lat/lon (≈ 90 % du décodage) sont validés une 
 fois par `run_field_loader` (premier champ, `decode_arrays`) ; les champs suivants
 utilisent `decode_values` (gain ≈ 12× en temps, pic mémoire 37 → 12 Mo, aucun
 stockage disque supplémentaire, valeurs identiques, mêmes contrôles de dimensions et de
-finitude ; `plot` garde la validation complète à chaque champ). Une pile de 35 champs
+finitude, plus la signature scalaire de la grille (bornes, pas, sens de balayage GRIB)
+vérifiée à chaque message ; `plot` garde la validation complète à chaque champ). Une pile de 35 champs
 float32 pèse 145 Mo ; les 34 échéances (3 h à 102 h) en RAM : ≈ 4,9 Go, trop
 pour cette machine.
 

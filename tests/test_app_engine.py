@@ -91,13 +91,33 @@ def test_constant_predictor_points_are_nan_not_plausible_values() -> None:
 def test_zero_variance_target_is_an_explicit_error() -> None:
     fields = _fields((24, 48))
     fields[48][:] = 54_000.0
+    engine = _engine(_Loader(fields))
     with pytest.raises(StatisticsError, match="zero variance"):
-        _engine(_Loader(fields)).sensitivity(
+        engine.sensitivity(
             target_lead_hours=48,
             predictor_lead_hours=24,
             center_latitude=0.0,
             center_longitude=0.0,
             radius_km=1000.0,
+        )
+
+
+def test_spatially_cancelling_constant_target_is_not_float32_rounding_noise() -> None:
+    fields = _fields((24, 48))
+    member = np.arange(len(MEMBERS), dtype=np.float64)
+    second = member * member % 17
+    # Raw zone mean is exactly 54000 for every member although each cell varies.
+    cells = np.stack([54_000.0 + member, 54_000.0 + second, 54_000.0 - member - second], axis=1)
+    fields[48][:] = 54_000.0
+    fields[48][:, 18, 35:38] = cells.astype(np.float32)
+    engine = _engine(_Loader(fields))
+    with pytest.raises(StatisticsError, match="zero variance"):
+        engine.sensitivity(
+            target_lead_hours=48,
+            predictor_lead_hours=24,
+            center_latitude=0.0,
+            center_longitude=180.0,
+            radius_km=600.0,
         )
 
 
@@ -132,8 +152,9 @@ def test_engine_rejects_too_few_members_and_a_too_small_cache() -> None:
 
 def test_invalid_zone_is_rejected_before_any_field_is_loaded() -> None:
     loader = _Loader(_fields((24, 48)))
+    engine = _engine(loader)
     with pytest.raises(ValueError, match="radius"):
-        _engine(loader).sensitivity(
+        engine.sensitivity(
             target_lead_hours=48,
             predictor_lead_hours=24,
             center_latitude=0.0,

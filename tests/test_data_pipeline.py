@@ -167,6 +167,7 @@ def _metadata(
         "Ni": 1440,
         "Nj": 721,
         "units": "m**2 s**-2",
+        **field_io.GRID_SCAN_SIGNATURE,
     }
 
 
@@ -1012,11 +1013,33 @@ def test_decode_values_matches_decode_arrays_without_reading_coordinates() -> No
     assert eccodes.released
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("jScansPositively", 1),
+        ("iScansNegatively", 1),
+        ("latitudeOfFirstGridPointInDegrees", -90.0),
+        ("longitudeOfFirstGridPointInDegrees", 0.25),
+        ("iDirectionIncrementInDegrees", 0.5),
+    ],
+)
+def test_decode_values_rejects_shifted_or_reversed_grid(key: str, value: float) -> None:
+    metadata = _metadata()
+    metadata[key] = value
+    message = _valid_grib_message()
+    eccodes = FakeEccodes(metadata)
+    with pytest.raises(RetrievalError, match=key):
+        field_io.decode_values(message, eccodes)
+    assert eccodes.released
+
+
 def test_decode_values_rejects_wrong_dimensions_and_nonfinite_values() -> None:
     metadata = _metadata()
     metadata["Ni"] = 10
+    message = _valid_grib_message()
+    wrong_dims = FakeEccodes(metadata)
     with pytest.raises(RetrievalError, match="grid dimensions"):
-        field_io.decode_values(_valid_grib_message(), FakeEccodes(metadata))
+        field_io.decode_values(message, wrong_dims)
 
     class NonfiniteEccodes(FakeEccodes):
         @override
@@ -1026,8 +1049,9 @@ def test_decode_values_rejects_wrong_dimensions_and_nonfinite_values() -> None:
             values[5] = np.inf
             return values
 
+    nonfinite = NonfiniteEccodes(_metadata())
     with pytest.raises(RetrievalError, match="non-finite"):
-        field_io.decode_values(_valid_grib_message(), NonfiniteEccodes(_metadata()))
+        field_io.decode_values(message, nonfinite)
 
 
 def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:

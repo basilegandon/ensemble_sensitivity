@@ -79,7 +79,7 @@ def _centre_in_place(stack: NDArray[np.float32]) -> _LeadEntry:
     for start in range(0, rows, ROW_BLOCK):
         window = slice(start, min(start + ROW_BLOCK, rows))
         block = stack[:, window, :].astype(np.float64)
-        constant[window] = np.ptp(block, axis=0) == 0.0
+        constant[window] = np.ptp(block, axis=0) <= 0.0
         mean[window] = block.mean(axis=0)
         block -= block.mean(axis=0)
         block[:, constant[window]] = 0.0
@@ -170,7 +170,10 @@ class SensitivityEngine:
         zone_weights = weights.ravel()[zone]
         values = target.anomalies.reshape(member_count, -1)[:, zone].astype(np.float64)
         centred_target = values @ zone_weights / zone_weights.sum()
-        if np.ptp(centred_target) == 0.0:
+        # Anomalies are rounded to float32: each carries a relative error <= eps/2, so
+        # target spreads below eps x max|anomaly| are rounding noise, not a signal.
+        resolution = float(np.finfo(np.float32).eps) * float(np.abs(values).max(initial=0.0))
+        if np.ptp(centred_target) <= resolution:
             raise StatisticsError("Target has zero variance across members: correlation undefined.")
         norm = np.float32(np.sqrt(centred_target @ centred_target))
         cross = centred_target.astype(np.float32) @ predictor.anomalies.reshape(member_count, -1)

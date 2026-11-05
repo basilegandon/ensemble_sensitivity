@@ -144,3 +144,17 @@ def test_select_run_resets_selection(tmp_path: Path) -> None:
     assert app.run_id == first
     assert app.selection.target_lead_hours == 3
     assert app.selection.predictor_lead_hours == 0
+
+
+@pytest.mark.usefixtures("synthetic")
+def test_refused_run_leaves_the_previous_state_untouched(tmp_path: Path) -> None:
+    only_initial = make_run(tmp_path, day=1, leads=(0,))
+    good = make_run(tmp_path, day=2)
+    app = AppModel(tmp_path)
+    selection = app.selection
+    with pytest.raises(AppSelectionError, match="at least two"):
+        app.select_run(only_initial)
+    assert app.run_id == good
+    assert app.leads == LEADS
+    assert app.selection == selection
+    assert app.maps().selection == selection

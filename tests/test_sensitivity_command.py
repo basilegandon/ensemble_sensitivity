@@ -267,8 +267,9 @@ def test_run_sensitivity_single_pair_and_unknown_lead(
 
     single = command.run_sensitivity(_request(tmp_path, run_id, target=6, predictor=3))
     assert [path.name[:26] for path in single] == ["sensitivity_t006_from_t003"]
+    request = _request(tmp_path, run_id, target=4, predictor=None)
     with pytest.raises(command.SensitivityCommandError, match="Target lead 4 h"):
-        command.run_sensitivity(_request(tmp_path, run_id, target=4, predictor=None))
+        command.run_sensitivity(request)
 
 
 def test_cli_sensitivity_success_and_failure(
