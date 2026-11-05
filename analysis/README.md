@@ -7,7 +7,7 @@ une échéance antérieure.
 
 La première méthode retenue est une corrélation de Pearson, sans test de
 significativité. Le module de calcul pur est implémenté et testé (paquet
-`src/ensemble_sensitivity/sensitivity/`) ; la commande `sensitivity` produit la carte PNG et sa provenance ; l’application
+`src/ensemble_sensitivity/sensitivity/`) ; la commande `sensitivity` produit les cartes PNG (triangle cible/prédicteur) et leur provenance ; le coût du précalcul est mesuré dans [`ANALYSIS.md`](ANALYSIS.md) ; l’application
 interactive et la significativité ne sont pas implémentées. Les choix déjà
 discutés et les questions qui restent ouvertes sont consignés dans
 [`ANALYSIS.md`](ANALYSIS.md).

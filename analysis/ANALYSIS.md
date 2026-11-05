@@ -29,11 +29,106 @@ Implémenté et testé (données synthétiques) : zone circulaire, moyenne pond�
 cos(latitude), cible par membre, corrélation de Pearson signée sur les membres,
 avec mémoire bornée (un champ à la fois). La commande `sensitivity` génère
 une carte PNG (colormap divergente, zone tracée) et son JSON sous `<uuid>/maps`.
+Sans `--predictor-lead`, `sensitivity` calcule le triangle des couples
+(cible, prédicteur) : pour la cible T, une carte par échéance disponible du
+manifeste strictement antérieure à T, puis la cible devient l’échéance
+disponible précédente, jusqu’à épuisement (la plus ancienne n’est jamais
+cible). Le couple prédicteur = cible est exclu (corrélation triviale de 1).
+La cible par membre est calculée une fois par cible ; un seul champ est en
+mémoire à la fois ; une barre de progression `tqdm` suit les couples.
 Non implémenté : application interactive, précalcul, significativité.
 
 Choix de conception : rayon limité à ]0, π·R] km (R = 6371,0088 km) ; mailles
 du pôle pondérées par cos(±90°) ≈ 0 ; une maille hors de la zone n’est jamais
 lue pour la cible, donc une valeur non finie y est ignorée.
+
+## Coût du précalcul (mesures)
+
+**Données synthétiques** : pas de jeton ni de données réelles. Champs lisses
+(ondes + bruit) 1440×721, 35 membres, vrai GRIB2 simple 16 bits encodé avec
+ecCodes. Machine : Intel i5-10310U, 7,7 Go de RAM, un seul processus.
+Reproductible : `uv run python scripts/benchmark_precompute.py`.
+Les tailles compressées sont pessimistes (bruit blanc sur la carte ; une vraie
+carte de corrélation est plus lisse).
+
+| Mesure | Valeur |
+|---|---|
+| Décodage d’un champ (`decode_arrays`, valeurs + lat/lon) | 0,18 s |
+| dont valeurs seules | 0,010 s |
+| Taille d’un GRIB2 (16 bits) | 2,08 Mo |
+| Carte, Pearson en flux (35 champs en RAM) | 0,82 s, pic alloué 84 Mo |
+| Carte, produit matriciel, anomalies recalculées | 0,37 s |
+| Carte, produit matriciel, anomalies/normes en cache (float32) | 0,016 s |
+| Cible par membre (35 champs), 250 à 2000 km | 0,042 à 0,051 s |
+| Poids de zone (par centre/rayon) | 0,032 s |
+| Rendu PNG cartopy d’une carte pleine grille | 0,69 s (599 Ko) |
+
+Constat : 90 % du temps de décodage vient du calcul de lat/lon refait à chaque
+champ (`grid_axes()` suffirait, optimisation non faite). Une pile de 35 champs
+float32 pèse 145 Mo ; les 34 échéances (3 h à 102 h) en RAM : ≈ 4,9 Go, trop
+pour cette machine.
+
+Taille d’une carte stockée (1440×721) :
+
+| Encodage | Taille |
+|---|---|
+| float32 brut | 4056 Ko |
+| float32 + zlib | 3692 Ko |
+| float16 + zlib | 1716 Ko |
+| int8 (pas 1/127) + zlib | 842 Ko |
+| int8 + zlib, grille 0,5° | 215 Ko |
+| int8 + zlib, grille 1° | 55 Ko |
+
+Nombre de couples pour 34 échéances (3 h à 102 h) : 34·33/2 = 561 cartes par
+couple (centre, rayon) ; 33 cibles. Coût par (centre, rayon), champs en RAM :
+33·0,045 s (cibles) + 561·0,016 s (cartes) ≈ 10,5 s, hors décodage.
+Sans cache, la commande `sensitivity` actuelle coûte par carte ≈ 6,2 s de
+décodage (35 champs) + 0,82 s + 0,69 s de rendu ≈ 7,7 s, soit ≈ 72 min pour un
+triangle complet.
+
+Extrapolation, 4 rayons, 561 couples d’échéances, un processus :
+
+| Pas des centres | Centres | (centre, rayon) | Calcul ≈ 10,5 s chacun | Stockage int8+zlib 1° (55 Ko/carte) |
+|---|---|---|---|---|
+| 5° | 2 664 | 10 656 | ≈ 31 h | ≈ 329 Go |
+| 2° | 16 380 | 65 520 | ≈ 191 h | ≈ 2,0 To |
+| 1° | 65 160 | 260 640 | ≈ 760 h | ≈ 8,0 To |
+
+Stratégies comparées :
+
+| Stratégie | Calcul | Stockage | Latence d’interaction | Avis |
+|---|---|---|---|---|
+| Précalcul complet | 31 h à 5° ; ≥ 190 h à 2° | 0,3 à 8 To | lecture disque (≈ ms) | Rejeté : volume et temps disproportionnés, résolution des centres imposée. |
+| Précalcul grossier (5°, 1 rayon) + calcul à la volée | ≈ 8 h | ≈ 80 Go à 1° de grille | lecture, puis raffinement à la volée | Complexe ; le gain est faible face à la volée. |
+| Tout à la volée avec cache | 0 à l’avance | ≈ 290 Mo RAM (2 échéances × 35 champs float32) | zone 0,032 + cible 0,045 + carte 0,016 ≈ 0,09 s | Retenu : centre, rayon et échéances libres. |
+
+Conditions de la volée : garder en RAM les piles de la cible et du prédicteur
+sélectionnés et les anomalies/normes du prédicteur en cache (0,016 s par carte
+au lieu de 0,82 s) ; changer d’échéance coûte un chargement de 35 champs
+(≈ 0,35 s en valeurs seules, ≈ 6 s avec le lat/lon recalculé aujourd’hui, d’où
+l’intérêt de décoder les axes une seule fois). Le calcul tient donc sous
+100 à 200 ms, mais le rendu cartopy (0,69 s) ne convient pas : l’application
+doit mettre à jour une image (`imshow`/glyphe image) sans redessiner le fond.
+La cible peut encore être accélérée en limitant le masque à la bande de
+latitudes du cercle (non mesuré).
+
+## Options d’application locale (non implémentée)
+
+Critères : deux cartes liées (zoom/pan synchronisés), curseur → recalcul
+< 100–200 ms, Python 3.14/uv, taille des dépendances. La disponibilité des
+roues Python 3.14 n’a pas été vérifiée pour ces paquets.
+
+| Option | Avantages | Inconvénients |
+|---|---|---|
+| Panel + Bokeh | Serveur Python local, calcul dans le même processus ; images float32 envoyées en binaire ; axes liés natifs entre figures ; curseurs côté Python | Fond de carte à tracer en lignes Bokeh (géométries cartopy converties) ; dépendances moyennes (bokeh, panel, param) |
+| Dash (Plotly) | Écosystème mature, callbacks simples, bon rendu web | Heatmap 1M points trop lourde en JSON : sous-échantillonnage nécessaire ; aller-retour HTTP par curseur ; liaison des deux cartes via callbacks ; dépendances plotly + flask volumineuses |
+| Streamlit | Très rapide à écrire | Réexécute le script à chaque interaction ; pas de liaison native de deux cartes ; latence incompatible avec 100–200 ms |
+| Qt + matplotlib (PySide6) | Aucune sérialisation, cartopy conservé, axes partagés natifs, mise à jour d’image par blit | Dépendance lourde (PySide6 > 150 Mo) ; application de bureau, pas de partage ; roues 3.14 à vérifier |
+
+Recommandation : **Panel + Bokeh** (équilibre latence, cartes liées,
+poids de dépendances, un seul processus Python), avec Qt + matplotlib en
+solution de repli si le fond de carte cartopy est prioritaire. **Décision
+attendue de l’utilisateur** ; rien n’est implémenté.
 
 ## Questions ouvertes
 
