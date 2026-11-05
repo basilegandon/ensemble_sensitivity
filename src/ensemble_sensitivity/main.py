@@ -134,6 +134,7 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
     )
     plot_parser.add_argument("--output", type=Path)
     _add_sensitivity_parser(subparsers, shared)
+    _add_app_parser(subparsers, shared)
     namespace = parser.parse_args(args)
     if namespace.verbose and namespace.quiet:
         parser.error("argument -q/--quiet: not allowed with argument -v/--verbose")
@@ -236,6 +237,51 @@ def _run_sensitivity(parsed_args: argparse.Namespace) -> None:
         raise SystemExit(1) from None
 
 
+def _add_app_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    shared: argparse.ArgumentParser,
+) -> None:
+    """Declare the ``app`` subcommand."""
+    parser = subparsers.add_parser(
+        "app",
+        parents=[shared],
+        help="local application: two linked maps (target mean/spread and Pearson correlation)",
+        description=(
+            "Serve a local Panel/Bokeh application on 127.0.0.1: click the target map to set "
+            "the zone centre, the correlation map is recomputed on the fly."
+        ),
+    )
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--run-id", help="run UUID from runs_index.json (default: most recent)")
+    parser.add_argument("--port", type=int, default=5006, help="local port (default: %(default)s)")
+    parser.add_argument("--no-browser", action="store_true", help="do not open the default browser")
+
+
+def _run_app(parsed_args: argparse.Namespace) -> None:
+    """Run the ``app`` command.
+
+    Raises:
+        SystemExit: If the run cannot be opened.
+
+    """
+    from ensemble_sensitivity.app.view import serve  # ruff: ignore[import-outside-top-level]
+
+    try:
+        serve(
+            parsed_args.output_dir,
+            parsed_args.run_id,
+            port=parsed_args.port,
+            show=not parsed_args.no_browser,
+        )
+    except (OSError, RetrievalError, ValueError) as error:
+        logger.error(  # ruff: ignore[error-instead-of-exception]
+            "Unable to start the application: %s",
+            error,
+            exc_info=parsed_args.verbose,
+        )
+        raise SystemExit(1) from None
+
+
 def _run_fetch(parsed_args: argparse.Namespace) -> None:
     """Run the ``fetch`` command.
 
@@ -293,7 +339,12 @@ def _run_plot(parsed_args: argparse.Namespace) -> None:
 
 def _dispatch(parsed_args: argparse.Namespace) -> None:
     """Run the selected command."""
-    handlers = {"fetch": _run_fetch, "plot": _run_plot, "sensitivity": _run_sensitivity}
+    handlers = {
+        "fetch": _run_fetch,
+        "plot": _run_plot,
+        "sensitivity": _run_sensitivity,
+        "app": _run_app,
+    }
     handler = handlers.get(parsed_args.command)
     if handler is not None:
         handler(parsed_args)
