@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 
+from ensemble_sensitivity.sensitivity import compute
 from ensemble_sensitivity.sensitivity.compute import compute_sensitivity
 from ensemble_sensitivity.sensitivity.statistics import (
     StatisticsError,
@@ -272,3 +275,25 @@ def test_compute_sensitivity_reports_missing_member_and_bad_request() -> None:
     kwargs["predictor_lead_hours"] = 24
     with pytest.raises(StatisticsError, match="earlier"):
         compute_sensitivity(load, LATITUDES, LONGITUDES, members=range(5), **kwargs)
+
+
+def test_run_field_loader_validates_the_grid_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    values = np.zeros((2, 2), dtype=np.float32)
+
+    full = SimpleNamespace(values=values)
+
+    def fake_load_field(*_: object, **__: object) -> object:
+        calls.append("full")
+        return full
+
+    def fake_load_values(*_: object, **__: object) -> object:
+        calls.append("fast")
+        return values
+
+    monkeypatch.setattr(compute, "load_field", fake_load_field)
+    monkeypatch.setattr(compute, "load_values", fake_load_values)
+    loader = compute.run_field_loader(Path("run"), {"fields": []})
+    for member in range(3):
+        assert loader(member, 24) is values
+    assert calls == ["full", "fast", "fast"]

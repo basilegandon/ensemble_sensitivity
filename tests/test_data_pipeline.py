@@ -992,6 +992,44 @@ def test_coordinate_validation_rejects_wrong_global_grid_spacing() -> None:
         field_io.decode_arrays(message, eccodes)
 
 
+def test_decode_values_matches_decode_arrays_without_reading_coordinates() -> None:
+    class CountingEccodes(FakeEccodes):
+        def __init__(self, metadata: dict[str, int | float | str]) -> None:
+            super().__init__(metadata)
+            self.array_keys: list[str] = []
+
+        @override
+        def codes_get_array(self, handle: object, key: str) -> object:
+            self.array_keys.append(key)
+            return super().codes_get_array(handle, key)
+
+    message = _valid_grib_message()
+    full_values, _, _ = field_io.decode_arrays(message, FakeEccodes(_metadata()))
+    eccodes = CountingEccodes(_metadata())
+    values = field_io.decode_values(message, eccodes)
+    np.testing.assert_array_equal(values, full_values)
+    assert eccodes.array_keys == ["values"]
+    assert eccodes.released
+
+
+def test_decode_values_rejects_wrong_dimensions_and_nonfinite_values() -> None:
+    metadata = _metadata()
+    metadata["Ni"] = 10
+    with pytest.raises(RetrievalError, match="grid dimensions"):
+        field_io.decode_values(_valid_grib_message(), FakeEccodes(metadata))
+
+    class NonfiniteEccodes(FakeEccodes):
+        @override
+        def codes_get_array(self, handle: object, key: str) -> object:
+            del handle, key
+            values = np.full(1440 * 721, 54_000, dtype=np.float32)
+            values[5] = np.inf
+            return values
+
+    with pytest.raises(RetrievalError, match="non-finite"):
+        field_io.decode_values(_valid_grib_message(), NonfiniteEccodes(_metadata()))
+
+
 def test_manifest_field_path_must_stay_in_run_directory(tmp_path: Path) -> None:
     manifest = {
         "status": "complete",

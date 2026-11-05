@@ -22,7 +22,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from ensemble_sensitivity.field_io import GRID_NI, GRID_NJ, ArrayEccodes, decode_arrays, grid_axes
+from ensemble_sensitivity.field_io import (
+    GRID_NI,
+    GRID_NJ,
+    ArrayEccodes,
+    decode_arrays,
+    decode_values,
+    grid_axes,
+)
 from ensemble_sensitivity.sensitivity.compute import (
     SensitivityResult,
     correlate_with_target,
@@ -103,17 +110,22 @@ def decode_cost(field: NDArray[np.float32]) -> None:
     body = build_grib(field)
     full = _timed(lambda: decode_arrays(body, cast("ArrayEccodes", eccodes)))
 
-    def values_only() -> None:
-        handle = eccodes.codes_new_from_message(body)
-        try:
-            eccodes.codes_get_array(handle, "values")
-        finally:
-            eccodes.codes_release(handle)
+    typed = cast("ArrayEccodes", eccodes)
+    fast = _timed(lambda: decode_values(body, typed))
+    tracemalloc.start()
+    decode_arrays(body, typed)
+    peak_full = tracemalloc.get_traced_memory()[1]
+    tracemalloc.reset_peak()
+    decode_values(body, typed)
+    peak_fast = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
 
     _write("| Décodage d'un champ | temps (s) |")
     _write("|---|---|")
     _write(f"| `decode_arrays` (valeurs + lat/lon) | {full:.3f} |")
-    _write(f"| valeurs seules | {_timed(values_only):.3f} |")
+    _write(f"| `decode_values` (valeurs seules, chemin rapide) | {fast:.3f} |")
+    peaks = f"{peak_full / 1e6:.0f} / {peak_fast / 1e6:.0f} Mo"
+    _write(f"| pic alloué `decode_arrays` / `decode_values` | {peaks} |")
     _write(f"| taille GRIB2 (16 bits) | {len(body) / 1e6:.2f} Mo |")
     _write()
 

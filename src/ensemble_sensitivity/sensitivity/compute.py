@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ensemble_sensitivity.field_io import grid_axes, load_field, read_manifest
+from ensemble_sensitivity.field_io import grid_axes, load_field, load_values, read_manifest
 from ensemble_sensitivity.sensitivity.statistics import (
     MIN_MEMBERS,
     StatisticsError,
@@ -140,13 +140,22 @@ def correlate_with_target(
 def run_field_loader(run_dir: Path, manifest: dict[str, object]) -> FieldLoader:
     """Build a loader reading validated fields of a complete retrieval directory.
 
+    The first field read is decoded with its coordinates and checked against the
+    documented global grid; later fields skip the (slow) coordinate arrays.
+
     Returns:
         A ``(member, lead_hours)`` loader decoding one field per call.
 
     """
+    grid_checked = False
 
     def load(member: int, lead_hours: int) -> NDArray[np.floating]:
-        return load_field(run_dir, manifest, member=member, lead_hours=lead_hours).values
+        nonlocal grid_checked
+        if grid_checked:
+            return load_values(run_dir, manifest, member=member, lead_hours=lead_hours)
+        values = load_field(run_dir, manifest, member=member, lead_hours=lead_hours).values
+        grid_checked = True
+        return values
 
     return load
 

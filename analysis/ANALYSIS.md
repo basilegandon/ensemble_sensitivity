@@ -53,8 +53,8 @@ carte de corrélation est plus lisse).
 
 | Mesure | Valeur |
 |---|---|
-| Décodage d’un champ (`decode_arrays`, valeurs + lat/lon) | 0,18 s |
-| dont valeurs seules | 0,010 s |
+| Décodage d’un champ, avant (`decode_arrays`, valeurs + lat/lon) | 0,18 à 0,30 s, pic alloué 37 Mo |
+| Décodage d’un champ, après (`decode_values`, valeurs seules) | 0,010 à 0,024 s, pic alloué 12 Mo |
 | Taille d’un GRIB2 (16 bits) | 2,08 Mo |
 | Carte, Pearson en flux (35 champs en RAM) | 0,82 s, pic alloué 84 Mo |
 | Carte, produit matriciel, anomalies recalculées | 0,37 s |
@@ -63,8 +63,11 @@ carte de corrélation est plus lisse).
 | Poids de zone (par centre/rayon) | 0,032 s |
 | Rendu PNG cartopy d’une carte pleine grille | 0,69 s (599 Ko) |
 
-Constat : 90 % du temps de décodage vient du calcul de lat/lon refait à chaque
-champ (`grid_axes()` suffirait, optimisation non faite). Une pile de 35 champs
+Optimisation faite : les axes lat/lon (≈ 90 % du décodage) sont validés une seule
+fois par `run_field_loader` (premier champ, `decode_arrays`) ; les champs suivants
+utilisent `decode_values` (gain ≈ 12× en temps, pic mémoire 37 → 12 Mo, aucun
+stockage disque supplémentaire, valeurs identiques, mêmes contrôles de dimensions et de
+finitude ; `plot` garde la validation complète à chaque champ). Une pile de 35 champs
 float32 pèse 145 Mo ; les 34 échéances (3 h à 102 h) en RAM : ≈ 4,9 Go, trop
 pour cette machine.
 
@@ -83,7 +86,7 @@ Nombre de couples pour 34 échéances (3 h à 102 h) : 34·33/2 = 561 cartes par
 couple (centre, rayon) ; 33 cibles. Coût par (centre, rayon), champs en RAM :
 33·0,045 s (cibles) + 561·0,016 s (cartes) ≈ 10,5 s, hors décodage.
 Sans cache, la commande `sensitivity` actuelle coûte par carte ≈ 6,2 s de
-décodage (35 champs) + 0,82 s + 0,69 s de rendu ≈ 7,7 s, soit ≈ 72 min pour un
+décodage (35 champs, ancien chemin ; ≈ 0,5 s depuis l’optimisation) + 0,82 s + 0,69 s de rendu ≈ 7,7 s, soit ≈ 72 min pour un
 triangle complet.
 
 Extrapolation, 4 rayons, 561 couples d’échéances, un processus :
@@ -105,8 +108,7 @@ Stratégies comparées :
 Conditions de la volée : garder en RAM les piles de la cible et du prédicteur
 sélectionnés et les anomalies/normes du prédicteur en cache (0,016 s par carte
 au lieu de 0,82 s) ; changer d’échéance coûte un chargement de 35 champs
-(≈ 0,35 s en valeurs seules, ≈ 6 s avec le lat/lon recalculé aujourd’hui, d’où
-l’intérêt de décoder les axes une seule fois). Le calcul tient donc sous
+(≈ 0,35 à 0,85 s avec le chemin rapide ; ≈ 6 à 10 s avec l’ancien décodage). Le calcul tient donc sous
 100 à 200 ms, mais le rendu cartopy (0,69 s) ne convient pas : l’application
 doit mettre à jour une image (`imshow`/glyphe image) sans redessiner le fond.
 La cible peut encore être accélérée en limitant le masque à la bande de

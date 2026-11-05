@@ -277,6 +277,45 @@ def _validate_axis_spacing(
         raise RetrievalError("Z500 latitude axis does not use 0.25-degree spacing")
 
 
+def _decode_values(handle: object, eccodes: ArrayEccodes) -> NDArray[np.float32]:
+    """Decode the data values of an open message and check they are finite.
+
+    Returns:
+        Field values in native grid order.
+
+    Raises:
+        RetrievalError: If the grid is unexpected or values are non-finite.
+
+    """
+    ni, nj = _validate_grid_dimensions(
+        eccodes.codes_get(handle, "Ni"),
+        eccodes.codes_get(handle, "Nj"),
+    )
+    values = np.asarray(eccodes.codes_get_array(handle, "values"), dtype=np.float32).reshape(
+        (nj, ni)
+    )
+    if not np.isfinite(values).all():
+        raise RetrievalError("Z500 field contains non-finite values")
+    return values
+
+
+def decode_values(body: bytes, eccodes: ArrayEccodes) -> NDArray[np.float32]:
+    """Decode one field without reading its coordinate arrays.
+
+    The coordinate arrays dominate the decoding time and are identical for every field of
+    a run: validate them once with :func:`decode_arrays`, then use this fast path.
+
+    Returns:
+        Field values in native grid order.
+
+    """
+    handle = eccodes.codes_new_from_message(body)
+    try:
+        return _decode_values(handle, eccodes)
+    finally:
+        eccodes.codes_release(handle)
+
+
 def decode_arrays(
     body: bytes, eccodes: ArrayEccodes
 ) -> tuple[
@@ -289,31 +328,47 @@ def decode_arrays(
     Returns:
         Field values, longitude axis and latitude axis in native grid order.
 
-    Raises:
-        RetrievalError: If the grid is unexpected or values are non-finite.
-
     """
     handle = eccodes.codes_new_from_message(body)
     try:
-        ni, nj = _validate_grid_dimensions(
-            eccodes.codes_get(handle, "Ni"),
-            eccodes.codes_get(handle, "Nj"),
-        )
-        values = np.asarray(eccodes.codes_get_array(handle, "values"), dtype=np.float32).reshape(
-            (nj, ni)
-        )
+        values = _decode_values(handle, eccodes)
+        nj, ni = values.shape
         latitudes = np.asarray(
             eccodes.codes_get_array(handle, "latitudes"), dtype=np.float64
         ).reshape((nj, ni))
         longitudes = np.asarray(
             eccodes.codes_get_array(handle, "longitudes"), dtype=np.float64
         ).reshape((nj, ni))
-        if not np.isfinite(values).all():
-            raise RetrievalError("Z500 field contains non-finite values")
         longitude_axis, latitude_axis = _validate_coordinate_axes(longitudes, latitudes)
         return values, longitude_axis, latitude_axis
     finally:
         eccodes.codes_release(handle)
+
+
+def _read_validated_body(
+    run_dir: Path,
+    manifest: dict[str, object],
+    *,
+    member: int,
+    lead_hours: int,
+) -> tuple[bytes, dict[str, int | float | str]]:
+    """Read one manifest field from disk and validate it against the manifest.
+
+    Returns:
+        The GRIB message bytes and its validated metadata.
+
+    """
+    field_record = find_field(manifest, member=member, lead_hours=lead_hours)
+    body = read_field_body(manifest_field_path(run_dir, field_record))
+    initialization = manifest_initialization(manifest)
+    metadata = _validate_grib(
+        body,
+        _load_eccodes(),
+        member=member,
+        lead_hours=lead_hours,
+        initialization=initialization.astimezone(UTC),
+    )
+    return body, metadata
 
 
 def load_field(
@@ -335,19 +390,28 @@ def load_field(
         The decoded field in native grid order with its validated GRIB metadata.
 
     """
-    field_record = find_field(manifest, member=member, lead_hours=lead_hours)
-    body = read_field_body(manifest_field_path(run_dir, field_record))
-    initialization = manifest_initialization(manifest)
-    eccodes = _load_eccodes()
-    metadata = _validate_grib(
-        body,
-        eccodes,
-        member=member,
-        lead_hours=lead_hours,
-        initialization=initialization.astimezone(UTC),
+    body, metadata = _read_validated_body(run_dir, manifest, member=member, lead_hours=lead_hours)
+    values, longitude_axis, latitude_axis = decode_arrays(
+        body, cast("ArrayEccodes", _load_eccodes())
     )
-    values, longitude_axis, latitude_axis = decode_arrays(body, cast("ArrayEccodes", eccodes))
     return DecodedField(values, longitude_axis, latitude_axis, metadata)
+
+
+def load_values(
+    run_dir: Path,
+    manifest: dict[str, object],
+    *,
+    member: int,
+    lead_hours: int,
+) -> NDArray[np.float32]:
+    """Like :func:`load_field` but without coordinate arrays (grid already validated).
+
+    Returns:
+        The field values in native grid order.
+
+    """
+    body, _ = _read_validated_body(run_dir, manifest, member=member, lead_hours=lead_hours)
+    return decode_values(body, cast("ArrayEccodes", _load_eccodes()))
 
 
 def recenter_longitudes(
