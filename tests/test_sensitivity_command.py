@@ -54,7 +54,7 @@ def _figure(result: SensitivityResult) -> render.SensitivityFigure:
     )
 
 
-def _make_run(root: Path, *, created_day: int = 1) -> str:
+def _make_run(root: Path, *, created_day: int = 1, leads: tuple[int, ...] = ()) -> str:
     run_id = new_run_id()
     raw = root / run_id / "raw_fetch"
     raw.mkdir(parents=True)
@@ -62,7 +62,7 @@ def _make_run(root: Path, *, created_day: int = 1) -> str:
         json.dumps(
             {
                 "status": "complete",
-                "fields": [],
+                "fields": [{"member": 0, "lead_hours": lead} for lead in leads],
                 "coverage_id": "cov",
                 "initialization_utc": INITIALIZATION.isoformat(),
                 "run_id": run_id,
@@ -97,10 +97,9 @@ def test_zone_outline_traces_the_polar_circle(pole: float) -> None:
 def test_output_stem_distinguishes_close_requests(tmp_path: Path) -> None:
     first = replace(_request(tmp_path, None), center_latitude=45.501)
     second = replace(first, center_latitude=45.504)
-    assert command.output_stem(first) != command.output_stem(second)
-    assert command.output_stem(replace(first, radius_km=300.0)) != command.output_stem(
-        replace(first, radius_km=300.0000001)
-    )
+    assert command.output_stem(first, 24, 0) != command.output_stem(second, 24, 0)
+    longer = replace(first, radius_km=300.0000001)
+    assert command.output_stem(first, 24, 0) != command.output_stem(longer, 24, 0)
 
 
 def test_render_writes_png_and_provenance(
@@ -164,48 +163,112 @@ def test_resolve_run_errors_are_explicit(tmp_path: Path) -> None:
         command.resolve_run(tmp_path, known)
 
 
-def _request(root: Path, run_id: str | None) -> command.SensitivityRequest:
+def _request(
+    root: Path,
+    run_id: str | None,
+    *,
+    target: int = 24,
+    predictor: int | None = 0,
+) -> command.SensitivityRequest:
     return command.SensitivityRequest(
         output_root=root,
         run_id=run_id,
-        target_lead_hours=24,
-        predictor_lead_hours=0,
+        target_lead_hours=target,
+        predictor_lead_hours=predictor,
         center_latitude=45.5,
         center_longitude=-3.0,
         radius_km=300.0,
+        show_progress=False,
     )
 
 
-def test_run_sensitivity_wires_run_compute_and_outputs(
+def test_plan_pairs_builds_the_triangle_without_trivial_pairs() -> None:
+    leads = (0, 3, 6, 9)
+    assert command.plan_pairs(leads, 9, None) == ((9, (0, 3, 6)), (6, (0, 3)), (3, (0,)))
+    assert command.plan_pairs(leads, 6, None) == ((6, (0, 3)), (3, (0,)))
+    assert command.plan_pairs(leads, 9, 3) == ((9, (3,)),)
+
+
+@pytest.mark.parametrize(
+    ("target", "predictor", "message"),
+    [
+        (7, None, "Target lead 7 h"),
+        (0, None, "no earlier available lead"),
+        (6, 6, "Predictor lead 6 h"),
+        (6, 4, "Predictor lead 4 h"),
+        (3, 9, "Predictor lead 9 h"),
+    ],
+)
+def test_plan_pairs_rejects_unusable_leads(
+    target: int, predictor: int | None, message: str
+) -> None:
+    with pytest.raises(command.SensitivityCommandError, match=message):
+        command.plan_pairs((0, 3, 6, 9), target, predictor)
+
+
+def _small_grid_run(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    leads: tuple[int, ...],
+) -> tuple[str, list[tuple[int, int]]]:
+    rng = np.random.default_rng(3)
+    base = rng.normal(5500.0, 30.0, size=(35, 11, 10))
+    calls: list[tuple[int, int]] = []
+
+    def loader(*_args: object) -> object:
+        def load(member: int, lead: int) -> np.ndarray:
+            calls.append((member, lead))
+            return base[member] + lead * (1.0 + member / 35.0)
+
+        return load
+
+    monkeypatch.setattr(command, "run_field_loader", loader)
+    monkeypatch.setattr(
+        command,
+        "grid_axes",
+        lambda: (np.linspace(50.0, 40.0, 11), np.arange(350.0, 360.0)),
+    )
+    return _make_run(root, leads=leads), calls
+
+
+def test_run_sensitivity_computes_every_pair_with_one_target_pass_per_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_id = _make_run(tmp_path)
-    seen: dict[str, object] = {}
+    run_id, calls = _small_grid_run(tmp_path, monkeypatch, (0, 3, 6))
+    rendered: list[render.SensitivityFigure] = []
+    monkeypatch.setattr(command, "render_sensitivity", lambda data, _path: rendered.append(data))
 
-    def fake_compute(raw_dir: Path, **kwargs: object) -> SensitivityResult:
-        seen["raw_dir"] = raw_dir
-        seen.update(kwargs)
-        return _result()
+    outputs = command.run_sensitivity(_request(tmp_path, run_id, target=6, predictor=None))
 
-    def fake_render(data: render.SensitivityFigure, path: Path) -> None:
-        seen["figure"] = data
-        seen["path"] = path
-
-    monkeypatch.setattr(command, "sensitivity_from_run", fake_compute)
-    monkeypatch.setattr(command, "render_sensitivity", fake_render)
-
-    output = command.run_sensitivity(_request(tmp_path, run_id))
-
-    assert seen["raw_dir"] == tmp_path / run_id / "raw_fetch"
-    assert seen["members"] == tuple(range(35))
-    assert output == tmp_path / run_id / "maps" / (
-        "sensitivity_t024_from_t000_lat+45.5_lon-3.0_r300.0km.png"
+    maps = tmp_path / run_id / "maps"
+    assert outputs == (
+        maps / "sensitivity_t006_from_t000_lat+45.5_lon-3.0_r300.0km.png",
+        maps / "sensitivity_t006_from_t003_lat+45.5_lon-3.0_r300.0km.png",
+        maps / "sensitivity_t003_from_t000_lat+45.5_lon-3.0_r300.0km.png",
     )
-    figure = seen["figure"]
-    assert isinstance(figure, render.SensitivityFigure)
-    assert figure.run_id == run_id
-    assert figure.initialization == INITIALIZATION
+    assert [(f.result.target_lead_hours, f.result.predictor_lead_hours) for f in rendered] == [
+        (6, 0),
+        (6, 3),
+        (3, 0),
+    ]
+    assert all(f.run_id == run_id and f.initialization == INITIALIZATION for f in rendered)
+    # 2 target passes + 3 predictor passes, 35 members each: one field at a time.
+    assert len(calls) == 5 * 35
+    assert [lead for _member, lead in calls[: 35 * 3]] == [6] * 35 + [0] * 35 + [3] * 35
+
+
+def test_run_sensitivity_single_pair_and_unknown_lead(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id, _calls = _small_grid_run(tmp_path, monkeypatch, (0, 3, 6))
+    monkeypatch.setattr(command, "render_sensitivity", lambda _data, _path: None)
+
+    single = command.run_sensitivity(_request(tmp_path, run_id, target=6, predictor=3))
+    assert [path.name[:26] for path in single] == ["sensitivity_t006_from_t003"]
+    with pytest.raises(command.SensitivityCommandError, match="Target lead 4 h"):
+        command.run_sensitivity(_request(tmp_path, run_id, target=4, predictor=None))
 
 
 def test_cli_sensitivity_success_and_failure(
@@ -230,6 +293,8 @@ def test_cli_sensitivity_success_and_failure(
         "250",
     ]
     main_module.main(arguments)
+    main_module.main([*arguments[:5], *arguments[7:]])
+    assert calls[1].predictor_lead_hours is None
     assert calls[0].target_lead_hours == 48
     assert calls[0].run_id is None
     assert calls[0].radius_km == pytest.approx(250.0)

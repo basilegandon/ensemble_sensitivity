@@ -196,8 +196,11 @@ def _add_sensitivity_parser(
     parser.add_argument(
         "--predictor-lead",
         type=int,
-        required=True,
-        help="earlier lead in hours, strictly below the target lead",
+        help=(
+            "earlier lead in hours, strictly below the target lead; by default every "
+            "available lead up to the target is a target in turn, with all earlier leads "
+            "as predictors"
+        ),
     )
     parser.add_argument("--lat", type=float, required=True, help="zone centre latitude")
     parser.add_argument("--lon", type=float, required=True, help="zone centre longitude")
@@ -221,6 +224,7 @@ def _run_sensitivity(parsed_args: argparse.Namespace) -> None:
                 center_latitude=parsed_args.lat,
                 center_longitude=parsed_args.lon,
                 radius_km=parsed_args.radius_km,
+                show_progress=not parsed_args.quiet,
             )
         )
     except (OSError, RetrievalError, ValueError) as error:
@@ -247,6 +251,7 @@ def _run_fetch(parsed_args: argparse.Namespace) -> None:
                 output_dir=parsed_args.output_dir,
                 env_file=parsed_args.env_file,
                 coverage_id=parsed_args.coverage_id,
+                show_progress=not parsed_args.quiet,
             )
         )
     except (OSError, RetrievalError, ValueError) as error:

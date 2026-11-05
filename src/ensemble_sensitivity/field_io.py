@@ -77,6 +77,37 @@ def read_manifest(run_dir: Path) -> dict[str, object]:
     return manifest
 
 
+def grid_axes() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return the native PEARP grid axes (validated by :func:`decode_arrays`).
+
+    Returns:
+        Latitudes (north to south) and longitudes (0 to 359.75 degrees east).
+
+    """
+    return np.linspace(90.0, -90.0, GRID_NJ), np.arange(GRID_NI, dtype=np.float64) * 0.25
+
+
+def manifest_leads(manifest: dict[str, object]) -> tuple[int, ...]:
+    """List the forecast leads present in a complete manifest.
+
+    Returns:
+        Distinct lead hours in increasing order.
+
+    Raises:
+        RetrievalError: If the manifest has no field inventory.
+
+    """
+    fields = manifest["fields"]
+    if not isinstance(fields, list):
+        raise RetrievalError("Retrieval manifest has no field inventory")
+    leads: set[int] = set()
+    for value in fields:
+        lead = value.get("lead_hours") if isinstance(value, dict) else None
+        if isinstance(lead, int):
+            leads.add(lead)
+    return tuple(sorted(leads))
+
+
 def find_field(
     manifest: dict[str, object],
     *,

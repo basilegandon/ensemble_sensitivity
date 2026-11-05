@@ -121,7 +121,12 @@ uv run ensemble-sensitivity sensitivity --run-id <uuid> --target-lead 72 --predi
 ```
 
 `--run-id` est facultatif (run le plus récent de l’index) ; `--output-dir` vaut
-`output` par défaut. La carte (`PNG`, colormap divergente, zone cible tracée,
+`output` par défaut. `--predictor-lead` est facultatif : s’il est omis, la
+commande calcule le triangle des couples (cible, prédicteur) pour toutes les
+échéances disponibles du manifeste antérieures à `--target-lead` (cible = échéance
+disponible précédente, puis on recommence), avec une barre de progression `tqdm`
+(masquée par `--quiet`). Avec `-v`, seul le paquet `ensemble_sensitivity` passe en
+DEBUG ; les bibliothèques tierces restent à INFO. La carte (`PNG`, colormap divergente, zone cible tracée,
 mention « Source : Météo-France ») et son JSON de provenance sont écrits dans
 `output/<uuid>/maps/sensitivity_t<cible>_from_t<prédicteur>_lat…_lon…_r…km.*`.
 Les 35 membres et les deux échéances doivent figurer dans le run ; sinon la
